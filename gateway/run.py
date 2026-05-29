@@ -15778,7 +15778,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
                 cmd = approval_data.get("command", "")
-                desc = approval_data.get("description", "dangerous command")
+                desc = (approval_data.get("description") or "").strip() or "Geen reden meegeleverd; controleer de command en target voordat je goedkeurt."
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
