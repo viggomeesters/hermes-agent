@@ -66,6 +66,7 @@ def _make_runner(session_db=None):
     adapter.send_image_file = AsyncMock()
     adapter._bot = None
     adapter._create_dm_topic = AsyncMock(return_value=None)
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
     adapter.rename_dm_topic = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
@@ -201,6 +202,97 @@ async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
     runner._run_agent.assert_not_called()
     runner.session_store.reset_session.assert_not_called()
     runner.session_store.get_or_create_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_root_telegram_dm_rnew_creates_topic_and_runs_agent(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.adapters[Platform.TELEGRAM].create_handoff_thread = AsyncMock(
+        return_value="4242"
+    )
+    runner._handle_message_with_agent = AsyncMock(return_value="agent response")
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/rnew do the thing"))
+
+    assert result is None
+    runner.adapters[Platform.TELEGRAM].create_handoff_thread.assert_awaited_once_with(
+        "208214988",
+        "do the thing",
+    )
+    runner._handle_message_with_agent.assert_awaited_once()
+    routed_event, routed_source, routed_key, _run_generation = (
+        runner._handle_message_with_agent.await_args.args
+    )
+    assert routed_event.text == "do the thing"
+    assert routed_event.message_id is None
+    assert routed_source.thread_id == "4242"
+    assert routed_key == build_session_key(routed_source)
+    runner.adapters[Platform.TELEGRAM].send.assert_awaited_once_with(
+        "208214988",
+        "agent response",
+        metadata={
+            "thread_id": "4242",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "4242",
+        },
+    )
+    runner.session_store.get_or_create_session.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_root_telegram_dm_raycast_alias_creates_topic(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.adapters[Platform.TELEGRAM].create_handoff_thread = AsyncMock(
+        return_value="4243"
+    )
+    runner._handle_message_with_agent = AsyncMock(return_value=None)
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/raycast from raycast"))
+
+    assert result is None
+    runner.adapters[Platform.TELEGRAM].create_handoff_thread.assert_awaited_once_with(
+        "208214988",
+        "from raycast",
+    )
+    routed_event = runner._handle_message_with_agent.await_args.args[0]
+    assert routed_event.text == "from raycast"
+
+
+@pytest.mark.asyncio
+async def test_root_telegram_dm_rnew_reports_topic_creation_failure(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.adapters[Platform.TELEGRAM].create_handoff_thread = AsyncMock(
+        return_value=None
+    )
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("failed /rnew must not start an agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/rnew do the thing"))
+
+    assert "Could not create a new Telegram topic" in result
+    runner._handle_message_with_agent.assert_not_called()
 
 
 @pytest.mark.asyncio

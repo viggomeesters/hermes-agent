@@ -65,6 +65,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
+    CommandDef("rnew", "Create a new Telegram DM topic and start a session there", "Session",
+               aliases=("raycast",), gateway_only=True, args_hint="<prompt>"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",

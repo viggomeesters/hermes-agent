@@ -2160,6 +2160,99 @@ class GatewayRunner:
             "existing topic only if you want to replace that topic's current session."
         )
 
+    def _telegram_topic_rnew_usage_message(self) -> str:
+        return (
+            "Usage: /rnew <prompt>\n\n"
+            "Run this from the Telegram main chat to create a new topic and "
+            "start a fresh Hermes session there."
+        )
+
+    async def _handle_telegram_topic_root_rnew_command(
+        self,
+        event: MessageEvent,
+    ) -> Optional[str]:
+        """Create a Telegram DM topic from the root lobby and run the prompt there."""
+        source = event.source
+        prompt = (event.get_command_args() or "").strip()
+        if not prompt:
+            return self._telegram_topic_rnew_usage_message()
+        if not self._is_telegram_topic_root_lobby(source):
+            return (
+                "/rnew is only available from the Telegram main chat while "
+                "Telegram topic mode is enabled."
+            )
+
+        adapter = self.adapters.get(source.platform)
+        create_thread = getattr(adapter, "create_handoff_thread", None) if adapter else None
+        if create_thread is None:
+            return (
+                "Could not create a Telegram topic for /rnew: this Telegram "
+                "adapter does not support DM topic creation."
+            )
+
+        title_source = re.sub(r"\s+", " ", prompt).strip()
+        topic_name = title_source[:48] if title_source else "Raycast"
+        try:
+            created = create_thread(str(source.chat_id), topic_name)
+            new_thread_id = await created if inspect.isawaitable(created) else created
+        except Exception as exc:
+            logger.warning("Telegram /rnew topic creation failed: %s", exc, exc_info=True)
+            return f"Could not create a new Telegram topic for /rnew: {exc}"
+
+        if not new_thread_id:
+            return (
+                "Could not create a new Telegram topic for /rnew. Check that "
+                "Telegram DM topics are enabled for this bot chat and try again."
+            )
+
+        topic_source = dataclasses.replace(source, thread_id=str(new_thread_id))
+        topic_event = dataclasses.replace(
+            event,
+            text=prompt,
+            source=topic_source,
+            message_id=None,
+            reply_to_message_id=None,
+            reply_to_text=None,
+        )
+        topic_key = self._session_key_for_source(topic_source)
+        self._running_agents[topic_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[topic_key] = time.time()
+        run_generation = self._begin_session_run_generation(topic_key)
+
+        try:
+            agent_result = await self._handle_message_with_agent(
+                topic_event,
+                topic_source,
+                topic_key,
+                run_generation,
+            )
+            final_text = ""
+            if isinstance(agent_result, dict):
+                final_text = str(agent_result.get("final_response") or "")
+            elif isinstance(agent_result, str):
+                final_text = agent_result
+            if final_text.strip():
+                metadata = self._thread_metadata_for_source(topic_source)
+                send_result = await adapter.send(
+                    str(source.chat_id),
+                    final_text,
+                    metadata=metadata,
+                )
+                if getattr(send_result, "success", True) is False:
+                    error = getattr(send_result, "error", "unknown error")
+                    return (
+                        "Created a Telegram topic for /rnew, but could not "
+                        f"send the Hermes response there: {error}"
+                    )
+            return None
+        finally:
+            if self._running_agents.get(topic_key) is _AGENT_PENDING_SENTINEL:
+                self._release_running_agent_state(topic_key)
+            else:
+                self._running_agents_ts.pop(topic_key, None)
+                if hasattr(self, "_busy_ack_ts"):
+                    self._busy_ack_ts.pop(topic_key, None)
+
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
         if not self._is_telegram_topic_lane(source):
             return None
@@ -7273,6 +7366,9 @@ class GatewayRunner:
                 ),
                 execute=_do_reset,
             )
+
+        if canonical == "rnew":
+            return await self._handle_telegram_topic_root_rnew_command(event)
 
         if canonical == "topic":
             return await self._handle_topic_command(event)
