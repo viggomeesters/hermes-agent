@@ -7907,7 +7907,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    if self._busy_input_mode == "queue":
+                        self._queue_or_replace_pending_event(_quick_key, event)
+                    else:
+                        merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
             _telegram_followup_grace = float(
@@ -7951,16 +7954,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
+                    if self._busy_input_mode == "queue":
+                        self._queue_or_replace_pending_event(_quick_key, event)
+                    else:
+                        merge_pending_message_event(
+                            adapter._pending_messages,
+                            _quick_key,
+                            event,
+                            merge_text=True,
+                        )
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
-                    self._queue_or_replace_pending_event(_quick_key, event)
+                    queued = self._queue_or_replace_pending_event(_quick_key, event)
+                    if not queued:
+                        return f"⚠️ Queue full — I could not queue this while the gateway is {self._status_action_gerund()}. Please resend after it comes back."
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if self._queue_during_drain_enabled()
@@ -7968,7 +7976,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                 return None
             if self._busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
@@ -7986,7 +7996,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
@@ -8002,7 +8014,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "because the running agent has active subagents (#30170)",
                     _quick_key,
                 )
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
