@@ -7932,7 +7932,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     if self._busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
+                        queued = self._queue_or_replace_pending_event(_quick_key, event)
+                        if not queued:
+                            return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=adapter)}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                     else:
                         merge_pending_message_event(
                             adapter._pending_messages,

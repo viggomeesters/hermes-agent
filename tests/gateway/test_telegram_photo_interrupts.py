@@ -1,3 +1,4 @@
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -99,3 +100,28 @@ async def test_priority_draining_reports_queue_full_when_enqueue_rejected():
     assert isinstance(result, str)
     assert "Queue full" in result
     assert "could not queue" in result
+
+
+@pytest.mark.asyncio
+async def test_priority_telegram_grace_reports_queue_full_when_enqueue_rejected():
+    runner = _make_runner()
+    setattr(runner, "_BUSY_QUEUE_MAX_PENDING", 1)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="u1")
+    session_key = build_session_key(source)
+    running_agent = MagicMock()
+    running_agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
+    runner._running_agents[session_key] = running_agent
+    runner._running_agents_ts[session_key] = time.time()
+
+    first = MessageEvent(text="first", message_type=MessageType.TEXT, source=source)
+    second = MessageEvent(text="second", message_type=MessageType.TEXT, source=source)
+
+    assert await runner._handle_message(first) is None
+    result = await runner._handle_message(second)
+
+    assert isinstance(result, str)
+    assert "Queue full" in result
+    assert "could not queue" in result
+    adapter = runner.adapters[Platform.TELEGRAM]
+    assert adapter._pending_messages[session_key] is first
+    assert session_key not in runner._queued_events
