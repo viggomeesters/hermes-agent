@@ -4869,7 +4869,7 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 await self._send_queue_status_message(
                     pending_event,
-                    f"✅ Current task complete. Queue: {pending_count} → processing queued turn now.",
+                    f"✅ Current task complete. Queue: {pending_count} item(s) → processing queued turn now.",
                 )
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
@@ -5015,7 +5015,7 @@ class BasePlatformAdapter(ABC):
                     setattr(late_pending, "_hermes_queue_count_at_start", pending_count)
                     await self._send_queue_status_message(
                         late_pending,
-                        f"✅ Current task complete. Queue: {pending_count} → processing queued turn now.",
+                        f"✅ Current task complete. Queue: {pending_count} item(s) → processing queued turn now.",
                     )
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:

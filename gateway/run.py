@@ -4379,7 +4379,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly.
         # Queue-mode is the exception: if another follow-up was merged into the
-        # pending turn, send the updated Queue #N/N badge even inside cooldown so
+        # pending turn, send the updated Queue item N/N badge even inside cooldown so
         # mobile users can see the backlog is growing instead of wondering if the
         # later message was swallowed.
         _BUSY_ACK_COOLDOWN = 30
@@ -4423,9 +4423,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
-        queue_badge = "Queue #1/1"
+        queue_badge = "Queue item 1/1"
         if is_queue_mode:
-            queue_badge = f"Queue #{queued_count}/{queued_count}"
+            queue_badge = f"Queue item {queued_count}/{queued_count}"
         if is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
