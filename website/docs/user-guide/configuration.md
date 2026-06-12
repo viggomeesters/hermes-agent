@@ -608,9 +608,13 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  max_entry_chars: 0        # optional per-entry cap; 0 disables
+  hygiene_threshold_pct: 75 # operational warning/cleanup threshold
 ```
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+The built-in markdown memory files are intentionally small because they are injected into every session prompt. Use `max_entry_chars` as a guardrail when agents should keep this layer to compact routing/preferences/environment facts and move verbose project details into an external memory provider, skills, session history, or a vault.
 
 ## Context File Truncation
 

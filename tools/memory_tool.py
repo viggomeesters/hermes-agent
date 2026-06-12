@@ -121,11 +121,17 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        max_entry_chars: Optional[int] = None,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        self.max_entry_chars = int(max_entry_chars) if max_entry_chars else None
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -293,6 +299,23 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
+    def _entry_size_error(self, content: str) -> Optional[Dict[str, Any]]:
+        """Reject oversized always-on memory entries when a per-entry cap is configured."""
+        if not self.max_entry_chars or len(content) <= self.max_entry_chars:
+            return None
+        return {
+            "success": False,
+            "error": (
+                f"Entry is {len(content):,} chars, above the configured per-entry limit "
+                f"of {self.max_entry_chars:,} chars. Keep markdown memory to hot "
+                f"routing/preferences/environment facts only; move project direction, "
+                f"detailed notes, and procedures to fact_store, skills, or the vault."
+            ),
+            "entry_chars": len(content),
+            "max_entry_chars": self.max_entry_chars,
+            "remediation": "Shorten to one compact fact or use fact_store/skill/vault instead.",
+        }
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -303,6 +326,9 @@ class MemoryStore:
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
+        size_error = self._entry_size_error(content)
+        if size_error:
+            return size_error
 
         with self._file_lock(self._path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
@@ -358,6 +384,9 @@ class MemoryStore:
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
+        size_error = self._entry_size_error(new_content)
+        if size_error:
+            return size_error
 
         with self._file_lock(self._path_for(target)):
             bak = self._reload_target(target)
@@ -1010,6 +1039,9 @@ MEMORY_SCHEMA = {
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
         "single lone change.\n\n"
+        "If a deployment configures a per-entry limit, verbose entries are rejected: keep "
+        "markdown memory to hot routing/preferences/environment facts, and put project "
+        "direction/details in fact_store, skills, or the vault.\n\n"
         "WHEN: save proactively when the user states a preference, correction, or personal "
         "detail, or you learn a stable fact about their environment, conventions, or workflow. "
         "Priority: user preferences & corrections > environment facts > procedures. The best "

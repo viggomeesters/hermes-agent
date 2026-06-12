@@ -1927,6 +1927,12 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Optional hard cap for a single always-on markdown memory entry.
+        # Use this when a deployment wants MEMORY.md/USER.md to stay tiny and
+        # push detailed project direction into an external memory provider,
+        # skills, or a vault instead. Empty/0 disables the per-entry cap.
+        "max_entry_chars": 0,
+        "hygiene_threshold_pct": 75,  # operational warning/cleanup threshold
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

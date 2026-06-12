@@ -216,7 +216,11 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  max_entry_chars: 0        # optional per-entry cap; 0 disables
+  hygiene_threshold_pct: 75 # operational warning/cleanup threshold
 ```
+
+`MEMORY.md` and `USER.md` are small always-on prompt caches. Use them for durable facts that must be available immediately in every session. Put long project direction, procedures, transcripts, and research notes in a deeper memory provider, skills, session search, or your vault instead. Set `max_entry_chars` when you want oversized entries rejected before they bloat the always-on prompt.
 
 ## Controlling memory writes (`write_approval`)
 
@@ -321,7 +325,6 @@ On a messaging platform, approve a skill from its gist + metadata, or open
 `/skills diff` on the CLI / dashboard / the staged file under
 `~/.hermes/pending/skills/<id>.json` when you want to read the whole change.
 Full details in [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
-
 
 ## External Memory Providers
 
