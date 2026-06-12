@@ -353,6 +353,38 @@ class TestBusySessionAck:
         assert "Queue item 2/2" in content
 
     @pytest.mark.asyncio
+    async def test_queue_mode_reports_full_queue_instead_of_success_ack(self):
+        """A dropped follow-up must be visible as queue-full, not fake queued."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        setattr(runner, "_BUSY_QUEUE_MAX_PENDING", 1)
+        adapter = _make_adapter()
+
+        first = _make_event(text="first")
+        second = MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=first.source,
+            message_id="msg2",
+        )
+        sk = build_session_key(first.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[first.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
+
+        assert adapter._pending_messages[sk] is first
+        assert sk not in runner._queued_events
+        assert runner._queue_depth(sk, adapter=adapter) == 1
+        assert adapter._send_with_retry.await_count == 2
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue full" in content
+        assert "could not queue" in content
+
+    @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
         """busy_input_mode='steer' injects via agent.steer() and skips queueing."""
         runner, sentinel = _make_runner()

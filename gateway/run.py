@@ -4206,10 +4206,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
-            return
+            return False
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
         # the single pending slot when consecutive text messages arrived
@@ -4228,16 +4228,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
-            return
+            return True
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key,
                 self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return False
 
         self._enqueue_fifo(session_key, event, adapter)
+        return True
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -4265,8 +4266,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
-                self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                queued = self._queue_or_replace_pending_event(session_key, event)
+                if queued:
+                    message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                else:
+                    message = f"⚠️ Queue full — I could not queue this while the gateway is {self._status_action_gerund()}. Please resend after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
@@ -4375,9 +4379,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # steer that fell back to queue) arrived as one mashed-together
         # turn (#43066 sub-bug 2). The FIFO path gives each text its own
         # turn in arrival order while still preserving photo-burst / album
-        # merge semantics for media.
+        # merge semantics for media and returns False when the queue is full.
+        queued = True
         if not steered:
-            self._queue_or_replace_pending_event(session_key, event)
+            queued = self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -4403,6 +4408,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         queued_count = self._queue_depth(session_key, adapter=adapter) if is_queue_mode else 1
         last_acked_queue_count = int(getattr(queued_pending_event, "_hermes_last_ack_queue_count", 0) or 0)
         queue_count_increased = is_queue_mode and queued_count > last_acked_queue_count
+        if is_queue_mode and not queued:
+            queued_count = max(queued_count, self._BUSY_QUEUE_MAX_PENDING)
+            queue_count_increased = True
 
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly.
@@ -4468,10 +4476,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 f"I’ll pick this up when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
-            message = (
-                f"⏳ {queue_badge}{status_detail}. "
-                f"I’ll pick this up automatically once the current task finishes."
-            )
+            if queued:
+                message = (
+                    f"⏳ {queue_badge}{status_detail}. "
+                    f"I’ll pick this up automatically once the current task finishes."
+                )
+            else:
+                message = (
+                    f"⚠️ Queue full ({queued_count}/{self._BUSY_QUEUE_MAX_PENDING}){status_detail}. "
+                    f"I could not queue this message; please resend after the current task finishes."
+                )
         else:
             message = (
                 f"⚡ Interrupting current task{status_detail}. "

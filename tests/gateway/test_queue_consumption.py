@@ -16,6 +16,7 @@ from gateway.platforms.base import (
     MessageType,
     PlatformConfig,
     Platform,
+    queued_event_count,
 )
 
 
@@ -447,8 +448,10 @@ class TestBusyInputModeQueueFifo:
                 ),
             )
 
-        # Single merged head event with all three media URLs.
+        # Single merged head event with all three media URLs; album fragments
+        # remain one queued turn even though they carry multiple files.
         assert session_key not in runner._queued_events or not runner._queued_events[session_key]
         head = adapter._pending_messages[session_key]
         assert head.message_type == MessageType.PHOTO
         assert len(head.media_urls) == 3
+        assert queued_event_count(head) == 1

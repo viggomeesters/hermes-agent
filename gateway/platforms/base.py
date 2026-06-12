@@ -2011,7 +2011,6 @@ def merge_pending_message_event(
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            _record_merged_queue_count()
             return
 
         if existing_has_media or incoming_has_media:
@@ -2030,7 +2029,6 @@ def merge_pending_message_event(
                 and event.message_type != MessageType.TEXT
             ):
                 existing.message_type = event.message_type
-            _record_merged_queue_count()
             return
 
         if (
@@ -4915,7 +4913,7 @@ class BasePlatformAdapter(ABC):
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
-                    delivery_attempted or _tts_caption_delivered
+                    delivery_attempted
                     or images or local_files or media_files
                 )
                 if not _anything_delivered and _response_pre_extract.strip():
