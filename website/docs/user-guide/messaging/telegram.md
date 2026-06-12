@@ -762,7 +762,12 @@ Every topic gets its own conversation history, model state, tool execution, and 
 
 When Hermes generates a session title for a topic (via the auto-title pipeline, after the first exchange), the Telegram topic itself is renamed to match — e.g. "New Topic" becomes "Database migration plan". The rename is best-effort: failures are logged but don't break the session.
 
-To disable this and keep your manually-chosen topic names untouched, set:
+To disable this and keep your manually-chosen topic names untouched, set either of these equivalent forms in `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  disable_topic_auto_rename: true
+```
 
 ```yaml
 gateway:
@@ -772,7 +777,15 @@ gateway:
         disable_topic_auto_rename: true
 ```
 
+You can also set it from the CLI:
+
+```bash
+hermes config set telegram.disable_topic_auto_rename true
+```
+
 When this flag is on, Hermes still generates an internal session title (used by `hermes sessions`, the TUI, etc.) but never edits the Telegram topic name. Useful when you organise topics by hand under BotFather Threaded Mode and don't want every first reply to overwrite the title.
+
+After changing this setting, restart the gateway so the running bot reloads the config.
 
 ### `/new` inside a topic
 
