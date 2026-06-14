@@ -8,8 +8,10 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    build_plain_skill_invocation_message,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    resolve_plain_skill_trigger,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -57,6 +59,17 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
+
+    def test_records_plain_text_triggers(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "go-now",
+                frontmatter_extra='triggers:\n  - "go now"\n  - "$go-now"\n',
+            )
+            result = scan_skill_commands()
+
+        assert result["/go-now"]["triggers"] == ["go now", "$go-now"]
 
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -615,6 +628,103 @@ Generate some audio.
 
         assert msg is not None
         assert 'file_path="<path>"' in msg
+
+
+class TestPlainSkillTriggers:
+    def test_resolves_go_now_trigger_with_instruction(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "go-now",
+                frontmatter_extra='triggers:\n  - "go now"\n  - "$go-now"\n',
+            )
+            scan_skill_commands()
+            match = resolve_plain_skill_trigger("go now: fix the toolbar")
+
+        assert match == {
+            "cmd_key": "/go-now",
+            "trigger": "go now",
+            "user_instruction": "fix the toolbar",
+        }
+
+    def test_prefers_specific_go_skill_over_umbrella_aw_lite_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "agent-workflow-lite",
+                frontmatter_extra='triggers:\n  - "go now"\n  - "go task"\n',
+            )
+            _make_skill(
+                tmp_path,
+                "go-now",
+                frontmatter_extra='triggers:\n  - "go now"\n',
+            )
+            scan_skill_commands()
+            match = resolve_plain_skill_trigger("go now: fix the toolbar")
+
+        assert match == {
+            "cmd_key": "/go-now",
+            "trigger": "go now",
+            "user_instruction": "fix the toolbar",
+        }
+
+    def test_resolves_bare_skill_slug_and_preserves_multiline_bullet(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "go-now", frontmatter_extra='triggers:\n  - "go now"\n')
+            scan_skill_commands()
+            match = resolve_plain_skill_trigger("go-now\n\n- harden this")
+
+        assert match == {
+            "cmd_key": "/go-now",
+            "trigger": "go-now",
+            "user_instruction": "- harden this",
+        }
+
+    def test_resolves_telegram_underscore_slug(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "go-task")
+            scan_skill_commands()
+            match = resolve_plain_skill_trigger("go_task capture this")
+
+        assert match == {
+            "cmd_key": "/go-task",
+            "trigger": "go_task",
+            "user_instruction": "capture this",
+        }
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "please go now",
+            "go nowadays",
+            "/go-now handled by slash routing",
+            "go now?",
+        ],
+    )
+    def test_does_not_route_ordinary_prose(self, tmp_path, text):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "go-now", frontmatter_extra='triggers:\n  - "go now"\n')
+            scan_skill_commands()
+            match = resolve_plain_skill_trigger(text)
+
+        assert match is None
+
+    def test_builds_plain_skill_invocation_message_before_model_selection(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "go-now",
+                frontmatter_extra='triggers:\n  - "go now"\n',
+                body="Create an AW Lite task before editing code.",
+            )
+            scan_skill_commands()
+            msg = build_plain_skill_invocation_message("go now: add router")
+
+        assert msg is not None
+        assert 'invoked the "go-now" skill' in msg
+        assert "Create an AW Lite task before editing code." in msg
+        assert "add router" in msg
+        assert "routed it to /go-now before model selection" in msg
 
 
 class TestSkillDirectoryHeader:

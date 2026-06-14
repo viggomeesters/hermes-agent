@@ -9,7 +9,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 from hermes_constants import display_hermes_home
 from agent.skill_preprocessing import (
@@ -25,6 +25,15 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_PLAIN_TRIGGER_BOUNDARY = set(" \t\r\n:-–—")
+
+
+class PlainSkillTriggerMatch(TypedDict):
+    """Resolved plain-text skill trigger match."""
+
+    cmd_key: str
+    trigger: str
+    user_instruction: str
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -383,6 +392,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:
                         continue
+                    raw_triggers = frontmatter.get('triggers') or []
+                    if isinstance(raw_triggers, str):
+                        triggers = [raw_triggers]
+                    elif isinstance(raw_triggers, list):
+                        triggers = [str(item) for item in raw_triggers if str(item).strip()]
+                    else:
+                        triggers = []
                     # Respect user's disabled skills config
                     if name in disabled:
                         continue
@@ -407,6 +423,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "triggers": triggers,
                     }
                 except Exception:
                     continue
@@ -512,6 +529,139 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
         return None
     cmd_key = f"/{command.replace('_', '-')}"
     return cmd_key if cmd_key in get_skill_commands() else None
+
+
+def _plain_trigger_candidates(cmd_key: str, info: Dict[str, Any]) -> list[str]:
+    """Return trigger strings that may activate a skill from plain text."""
+    triggers: list[str] = []
+    raw_triggers = info.get("triggers") or []
+    if isinstance(raw_triggers, str):
+        raw_triggers = [raw_triggers]
+    if isinstance(raw_triggers, list):
+        triggers.extend(str(item) for item in raw_triggers if str(item).strip())
+
+    # Treat the skill slash-command slug itself as a plain command too.  This
+    # makes ``go-now`` and Telegram-style ``go_now`` deterministic even when the
+    # skill author only listed natural-language triggers such as ``go now``.
+    bare = cmd_key.lstrip("/")
+    if bare:
+        triggers.append(bare)
+        triggers.append(bare.replace("-", "_"))
+    return triggers
+
+
+def _strip_plain_trigger_remainder(remainder: str) -> str:
+    """Clean separator punctuation after a matched plain-text trigger."""
+    if not remainder:
+        return ""
+    original = remainder
+    remainder = remainder.lstrip(" \t\r")
+    if remainder.startswith((":", "–", "—")):
+        return remainder[1:].lstrip()
+    if remainder.startswith("- ") and not original.startswith(("\n", "\r")):
+        return remainder[2:].lstrip()
+    return remainder.strip()
+
+
+def _match_plain_trigger_prefix(text: str, trigger: str) -> Optional[str]:
+    """Return the remaining instruction when ``trigger`` matches text start.
+
+    Matching is intentionally prefix-only and boundary-checked.  ``go now: fix``
+    should route, but ``please go now`` and ``go nowadays`` should remain normal
+    conversation.
+    """
+    trigger = (trigger or "").strip()
+    if not trigger:
+        return None
+    candidate = (text or "").lstrip()
+    if not candidate:
+        return None
+    if not candidate.lower().startswith(trigger.lower()):
+        return None
+    if len(candidate) > len(trigger):
+        next_char = candidate[len(trigger)]
+        if next_char not in _PLAIN_TRIGGER_BOUNDARY:
+            return None
+    return _strip_plain_trigger_remainder(candidate[len(trigger):])
+
+
+def _trigger_matches_command_slug(cmd_key: str, trigger: str) -> bool:
+    """Return True when a trigger names this specific skill command."""
+    bare = cmd_key.lstrip("/").lower()
+    trigger_name = trigger.strip().lower().lstrip("$/")
+    return trigger_name in {
+        bare,
+        bare.replace("-", "_"),
+        bare.replace("-", " "),
+    }
+
+
+def resolve_plain_skill_trigger(text: str) -> Optional[PlainSkillTriggerMatch]:
+    """Resolve leading plain text such as ``go now`` to a skill command.
+
+    This is the non-slash companion to :func:`resolve_skill_command_key`.  It
+    lets gateways and other frontends hard-route command-like text to skills
+    before the model has a chance to treat it as ordinary prose.
+    """
+    raw_text = text or ""
+    if not raw_text.strip() or raw_text.lstrip().startswith("/"):
+        return None
+
+    matches: list[tuple[int, str, str, str]] = []
+    for cmd_key, info in get_skill_commands().items():
+        for trigger in _plain_trigger_candidates(cmd_key, info):
+            remainder = _match_plain_trigger_prefix(raw_text, trigger)
+            if remainder is None:
+                continue
+            matches.append((len(trigger.strip()), cmd_key, trigger.strip(), remainder))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: item[0], reverse=True)
+    best_len = matches[0][0]
+    best = [item for item in matches if item[0] == best_len]
+    cmd_keys = {item[1] for item in best}
+    if len(cmd_keys) != 1:
+        slug_specific = [
+            item for item in best if _trigger_matches_command_slug(item[1], item[2])
+        ]
+        slug_cmd_keys = {item[1] for item in slug_specific}
+        if len(slug_cmd_keys) == 1:
+            best = slug_specific
+            cmd_keys = slug_cmd_keys
+        else:
+            logger.debug(
+                "Ambiguous plain skill trigger %r matched commands: %s",
+                raw_text[:80], sorted(cmd_keys),
+            )
+            return None
+
+    _length, cmd_key, trigger, user_instruction = best[0]
+    return {
+        "cmd_key": cmd_key,
+        "trigger": trigger,
+        "user_instruction": user_instruction,
+    }
+
+
+def build_plain_skill_invocation_message(
+    text: str,
+    task_id: str | None = None,
+) -> Optional[str]:
+    """Build a skill invocation message from a plain-text trigger."""
+    match = resolve_plain_skill_trigger(text)
+    if not match:
+        return None
+    return build_skill_invocation_message(
+        match["cmd_key"],
+        match["user_instruction"],
+        task_id=task_id,
+        runtime_note=(
+            f"Matched plain-text trigger {match['trigger']!r} and routed it to "
+            f"{match['cmd_key']} before model selection."
+        ),
+    )
 
 
 def build_skill_invocation_message(
