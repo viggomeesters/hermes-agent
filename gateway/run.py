@@ -2288,8 +2288,11 @@ def _check_unavailable_skill(command_name: str) -> str | None:
 
 
 def _platform_config_key(platform: "Platform") -> str:
-    """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
-    return "cli" if platform == Platform.LOCAL else platform.value
+    """Map a Platform enum/raw value to its config.yaml key (LOCAL→"cli")."""
+    if platform == Platform.LOCAL:
+        return "cli"
+    value = getattr(platform, "value", platform)
+    return str(value or "")
 
 
 def _teams_pipeline_plugin_enabled() -> bool:
@@ -2369,6 +2372,19 @@ def _load_gateway_config() -> dict:
     except Exception:
         pass
     return raw
+
+
+def _runtime_copy_for_source(source):
+    """Return resolved gateway runtime copy for an inbound message source."""
+    try:
+        from gateway.copy_pack import copy_for
+
+        platform = getattr(source, "platform", Platform.LOCAL)
+        return copy_for(_load_gateway_config(), _platform_config_key(platform))
+    except Exception:
+        from gateway.copy_pack import COPY_PACKS
+
+        return COPY_PACKS["default"]
 
 
 def _load_gateway_runtime_config() -> dict:
@@ -2585,6 +2601,7 @@ def _normalize_empty_agent_response(
     response: str,
     *,
     history_len: int = 0,
+    copy_pack=None,
 ) -> str:
     """Normalize empty/None agent responses into user-facing messages.
 
@@ -2614,6 +2631,12 @@ def _normalize_empty_agent_response(
                 "Use /compact to compress the conversation, or "
                 "/reset to start fresh."
             )
+        if copy_pack is not None:
+            return copy_pack.format(
+                "processing_error",
+                error_type="request_failed",
+                error_detail=str(error_detail)[:300],
+            )
         return (
             f"The request failed: {str(error_detail)[:300]}\n"
             "Try again or use /reset to start a fresh session."
@@ -2638,6 +2661,12 @@ def _normalize_empty_agent_response(
     if api_calls > 0:
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
+            if copy_pack is not None:
+                return copy_pack.format(
+                    "processing_error",
+                    error_type="processing_stopped",
+                    error_detail=str(err)[:200],
+                )
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
         return (
             "⚠️ Processing completed but no response was generated. "
@@ -5186,11 +5215,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            copy = _runtime_copy_for_source(event.source)
             if self._queue_during_drain_enabled():
-                self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                queued = self._queue_or_replace_pending_event(session_key, event)
+                if queued:
+                    message = copy.format("queued_drain", action=self._status_action_gerund())
+                else:
+                    message = copy.format("queue_full_drain", action=self._status_action_gerund())
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = copy.format("drain_not_accepting", action=self._status_action_gerund())
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -5469,34 +5502,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        queue_badge = "Queue item 1/1"
+        if is_queue_mode:
+            queue_badge = f"Queue item {queued_count}/{queued_count}"
+        copy = _runtime_copy_for_source(event.source)
         if is_steer_mode:
-            message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
-            )
+            message = copy.format("busy_steer", status_detail=status_detail)
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
             # follow-up didn't accidentally kill the subagent and
             # discovers `/stop` as the explicit escape hatch.
-            message = (
-                f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
-            )
-        elif is_queue_mode and demoted_for_compression:
-            message = (
-                f"⏳ Compressing context{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
+            message = copy.format(
+                "busy_queue_subagent",
+                queue_badge=queue_badge,
+                count=queued_count,
+                status_detail=status_detail,
             )
         elif is_queue_mode:
-            message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
-            )
+            if queued:
+                message = copy.format(
+                    "busy_queue",
+                    queue_badge=queue_badge,
+                    count=queued_count,
+                    status_detail=status_detail,
+                )
+            else:
+                message = copy.format(
+                    "queue_full_current",
+                    count=queued_count,
+                    max_pending=self._BUSY_QUEUE_MAX_PENDING,
+                    status_detail=status_detail,
+                )
         else:
-            message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
-            )
+            message = copy.format("busy_interrupt", status_detail=status_detail)
 
         # First-touch onboarding: the very first time a user sends a message
         # while the agent is busy, append a one-time hint explaining the
@@ -9352,7 +9390,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = self._adapter_for_source(source)
                 if adapter:
                     if self._busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
+                        queued = self._queue_or_replace_pending_event(_quick_key, event)
+                        if not queued:
+                            return _runtime_copy_for_source(source).format(
+                                "queue_full_current",
+                                count=self._queue_depth(_quick_key, adapter=adapter),
+                                max_pending=self._BUSY_QUEUE_MAX_PENDING,
+                                status_detail="",
+                            )
                     else:
                         merge_pending_message_event(
                             adapter._pending_messages,
@@ -9382,16 +9427,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 return None
             if self._draining:
+                copy = _runtime_copy_for_source(source)
                 if self._queue_during_drain_enabled():
-                    self._queue_or_replace_pending_event(_quick_key, event)
-                return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                    if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-                )
+                    queued = self._queue_or_replace_pending_event(_quick_key, event)
+                    if not queued:
+                        return copy.format(
+                            "queue_full_drain",
+                            action=self._status_action_gerund(),
+                        )
+                    return copy.format("queued_drain", action=self._status_action_gerund())
+                return copy.format("drain_not_accepting", action=self._status_action_gerund())
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return _runtime_copy_for_source(source).format(
+                        "queue_full_current",
+                        count=self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform)),
+                        max_pending=self._BUSY_QUEUE_MAX_PENDING,
+                        status_detail="",
+                    )
                 return None
             if self._busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
@@ -9409,7 +9464,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return _runtime_copy_for_source(source).format(
+                        "queue_full_current",
+                        count=self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform)),
+                        max_pending=self._BUSY_QUEUE_MAX_PENDING,
+                        status_detail="",
+                    )
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
@@ -9425,7 +9487,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "because the running agent has active subagents (#30170)",
                     _quick_key,
                 )
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return _runtime_copy_for_source(source).format(
+                        "queue_full_current",
+                        count=self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform)),
+                        max_pending=self._BUSY_QUEUE_MAX_PENDING,
+                        status_detail="",
+                    )
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
@@ -11406,7 +11475,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # the case where agent did work but returned no text. Fix for #18765.
             if not _intentional_silence:
                 response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
+                    agent_result,
+                    response,
+                    history_len=len(history),
+                    copy_pack=_runtime_copy_for_source(source),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
 
@@ -11968,9 +12040,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 elif status_code == 400:
                     status_hint = " The request was rejected by the API."
-            return (
-                f"Sorry, I encountered an unexpected error.{status_hint}\n"
-                "Try again or use /reset to start a fresh session."
+            copy = _runtime_copy_for_source(source)
+            return copy.format(
+                "processing_error",
+                error_type=error_type,
+                error_detail=f"{error_detail}{status_hint}",
             )
         finally:
             # Restore session context variables to their pre-handler state
