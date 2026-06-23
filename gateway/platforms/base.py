@@ -3795,6 +3795,10 @@ class BasePlatformAdapter(ABC):
         empty again. Failures are intentionally non-fatal.
         """
         try:
+            if bool(getattr(event, "internal", False)) or bool(
+                getattr(event, "_hermes_suppress_queue_status", False)
+            ):
+                return
             reply_anchor = _reply_anchor_for_event(event)
             metadata = _thread_metadata_for_source(event.source, reply_anchor)
             await self.send(

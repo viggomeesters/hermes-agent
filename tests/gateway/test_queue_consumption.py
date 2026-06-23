@@ -8,6 +8,8 @@ after the agent finishes its current task — not silently dropped.
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
 
 from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (
@@ -27,6 +29,7 @@ from gateway.platforms.base import (
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        self.sent = []
 
     async def connect(self) -> bool:
         return True
@@ -36,6 +39,7 @@ class _StubAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         from gateway.platforms.base import SendResult
+        self.sent.append((chat_id, content, metadata))
         return SendResult(success=True, message_id="msg-1")
 
     async def get_chat_info(self, chat_id):
@@ -455,3 +459,20 @@ class TestBusyInputModeQueueFifo:
         assert head.message_type == MessageType.PHOTO
         assert len(head.media_urls) == 3
         assert queued_event_count(head) == 1
+
+
+@pytest.mark.asyncio
+async def test_internal_resume_event_suppresses_queue_lifecycle_message():
+    """Startup auto-resume events should not spam chats with queue lifecycle bubbles."""
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.TEXT,
+        source=MagicMock(chat_id="123", platform=Platform.TELEGRAM),
+        message_id="resume-1",
+        internal=True,
+    )
+
+    await adapter._send_queue_status_message(event, "✅ Queue empty.")
+
+    assert adapter.sent == []

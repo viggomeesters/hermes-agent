@@ -4621,6 +4621,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
+        restart_source_key = None
+        if restart_source is not None:
+            try:
+                restart_source_key = (
+                    restart_source.platform.value,
+                    str(restart_source.chat_id),
+                    str(restart_source.thread_id) if restart_source.thread_id else None,
+                )
+            except Exception:
+                restart_source_key = None
 
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
@@ -4667,6 +4677,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # platforms can share a parent chat while still routing to distinct
             # destinations via metadata.
             dedup_key = (platform_str, chat_id, str(thread_id) if thread_id else None)
+            # In-chat /restart is an operator command. Do not fan out the
+            # operator-flavoured shutdown banner to every active topic/chat;
+            # notify only the chat that requested the restart. Other sessions
+            # retain resume_pending state and recover silently.
+            if restart_source_key is not None and dedup_key != restart_source_key:
+                logger.info(
+                    "Restart shutdown notification suppressed for non-requesting active session: %s:%s",
+                    platform_str,
+                    chat_id,
+                )
+                continue
             if dedup_key in notified:
                 continue
 

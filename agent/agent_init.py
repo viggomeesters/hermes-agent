@@ -1732,11 +1732,10 @@ def init_agent(
     # Gateway status_callback is not yet wired, so any warning is stored
     # in _compression_warning and replayed in the first run_conversation().
     agent._compression_warning = None
-    # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
-    # above only reaches the CLI, so stash the same text here to be replayed
-    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
+    # Gateway users should not get low-level provider/context tuning notices in
+    # every chat after a restart; keep this as CLI/TUI operator output only.
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if _autoraise and compression_enabled and os.environ.get("_HERMES_GATEWAY") != "1":
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network

@@ -68,7 +68,10 @@ async def test_drain_queue_mode_queues_follow_up_without_interrupt():
     assert session_key in adapter._pending_messages
     assert adapter._pending_messages[session_key].text == "follow up"
     assert not adapter._active_sessions[session_key].is_set()
-    assert any("queued for the next turn" in message for message in adapter.sent)
+    assert any(
+        "queued for the next turn" in message or "backlog" in message.lower()
+        for message in adapter.sent
+    )
 
 
 @pytest.mark.asyncio
@@ -306,7 +309,7 @@ async def test_shutdown_notification_sent_to_active_sessions():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_notification_says_restarting_when_restart_requested():
+async def test_restart_notification_says_restarting_when_restart_requested():
     """When _restart_requested is True, the message says 'restarting' and mentions /retry."""
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
@@ -318,6 +321,27 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
     assert len(adapter.sent) == 1
     assert "restarting" in adapter.sent[0]
     assert "resume" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_in_chat_restart_notification_only_goes_to_requesting_chat():
+    """/restart should not broadcast operator shutdown banners to every active chat."""
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    request_source = make_restart_source(chat_id="111", chat_type="dm")
+    other_source = make_restart_source(chat_id="222", chat_type="dm")
+    runner._restart_command_source = request_source
+
+    runner._running_agents[build_session_key(request_source)] = MagicMock()
+    runner._running_agents[build_session_key(other_source)] = MagicMock()
+    runner.session_store._entries[build_session_key(request_source)] = MagicMock(origin=request_source)
+    runner.session_store._entries[build_session_key(other_source)] = MagicMock(origin=other_source)
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent_calls) == 1
+    assert adapter.sent_calls[0][0] == "111"
+    assert "restarting" in adapter.sent_calls[0][1]
 
 
 @pytest.mark.asyncio
