@@ -7327,6 +7327,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    def _start_ack_config(self, event: MessageEvent) -> tuple[bool, str]:
+        """Return whether to send a fresh-turn receipt and which text to use."""
+        try:
+            if bool(getattr(event, "internal", False)):
+                return False, ""
+            from gateway.display_config import resolve_display_setting
+
+            cfg = _load_gateway_config()
+            platform_key = _platform_config_key(event.source.platform)
+            enabled = bool(resolve_display_setting(cfg, platform_key, "start_ack", False))
+            if not enabled:
+                return False, ""
+
+            display_cfg = cfg.get("display") or {}
+            text = ""
+            platforms = display_cfg.get("platforms") or {}
+            platform_cfg = platforms.get(platform_key) if isinstance(platforms, dict) else None
+            if isinstance(platform_cfg, dict):
+                text = str(platform_cfg.get("start_ack_text") or "").strip()
+            if not text:
+                text = str(display_cfg.get("start_ack_text") or "").strip()
+            return True, text or "⏳ Received — starting."
+        except Exception as exc:
+            logger.debug("Failed to resolve start ack config: %s", exc)
+            return False, ""
+
+    async def _send_start_ack(self, event: MessageEvent, source: SessionSource) -> None:
+        """Best-effort receipt for a freshly accepted gateway turn."""
+        enabled, message = self._start_ack_config(event)
+        if not enabled or not message:
+            return
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        try:
+            metadata = self._thread_metadata_for_source(source, None)
+            send_with_retry = getattr(adapter, "_send_with_retry", None)
+            if callable(send_with_retry):
+                await send_with_retry(
+                    chat_id=source.chat_id,
+                    content=message,
+                    reply_to=None,
+                    metadata=metadata,
+                )
+            else:
+                await adapter.send(source.chat_id, message, metadata=metadata)
+        except Exception as exc:
+            logger.debug("Failed to send start ack: %s", exc)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -8553,6 +8602,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        await self._send_start_ack(event, source)
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
@@ -16578,6 +16628,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
+                if not _status_detail:
+                    _status_detail = " — still running"
                 _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None

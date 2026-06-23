@@ -256,6 +256,9 @@ class TestPlatformDefaults:
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
         assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
+        # Fresh-turn receipt is opt-in so existing installs don't get an
+        # extra message on every prompt unless they ask for command-bus ACKs.
+        assert resolve_display_setting({}, "telegram", "start_ack") is False
         # Discord keeps all of these on (desktop-first, more vertical space).
         assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
         assert resolve_display_setting({}, "discord", "long_running_notifications") is True
@@ -273,6 +276,7 @@ class TestPlatformDefaults:
                         "interim_assistant_messages": False,
                         "long_running_notifications": False,
                         "busy_ack_detail": "on",
+                        "start_ack": "yes",
                     }
                 }
             }
@@ -280,6 +284,7 @@ class TestPlatformDefaults:
         assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
         assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
+        assert resolve_display_setting(config, "telegram", "start_ack") is True
 
 
 # ---------------------------------------------------------------------------

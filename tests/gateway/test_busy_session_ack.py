@@ -893,3 +893,78 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=live_task
         ) is True
+
+class TestStartAck:
+    """Fresh gateway turns can optionally send a short receipt immediately."""
+
+    @pytest.mark.asyncio
+    async def test_send_start_ack_uses_platform_config_text_without_reply_quote(self, monkeypatch):
+        import gateway.run as _gr
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {
+                "display": {
+                    "platforms": {
+                        "telegram": {
+                            "start_ack": True,
+                            "start_ack_text": "⏳ Opgepakt.",
+                        }
+                    }
+                }
+            },
+        )
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="8340627826",
+            chat_type="dm",
+            user_id="user1",
+            thread_id="20021",
+        )
+        event = MessageEvent(
+            text="do work",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="msg-start",
+        )
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        await GatewayRunner._send_start_ack(runner, event, source)
+
+        adapter._send_with_retry.assert_awaited_once()
+        kwargs = adapter._send_with_retry.call_args.kwargs
+        assert kwargs["content"] == "⏳ Opgepakt."
+        assert kwargs["reply_to"] is None
+        assert kwargs["metadata"]["direct_messages_topic_id"] == "20021"
+        assert "telegram_reply_to_message_id" not in kwargs["metadata"]
+
+    @pytest.mark.asyncio
+    async def test_send_start_ack_is_silent_when_disabled(self, monkeypatch):
+        import gateway.run as _gr
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="8340627826",
+            chat_type="dm",
+            user_id="user1",
+        )
+        event = MessageEvent(
+            text="do work",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="msg-start",
+        )
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        await GatewayRunner._send_start_ack(runner, event, source)
+
+        adapter._send_with_retry.assert_not_awaited()
+

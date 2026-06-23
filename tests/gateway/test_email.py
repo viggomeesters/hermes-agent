@@ -702,6 +702,22 @@ class TestSendMethods(unittest.TestCase):
             mock_server.send_message.assert_called_once()
             mock_server.quit.assert_called_once()
 
+    def test_send_uses_default_bcc_envelope(self):
+        """EMAIL_DEFAULT_BCC should blind-copy recipients without adding a Bcc header."""
+        adapter = self._make_adapter()
+
+        with patch.dict(os.environ, {"EMAIL_DEFAULT_BCC": "audit@test.com"}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                adapter._send_email("user@test.com", "Hello from Hermes!", None)
+
+                send_call = mock_server.send_message.call_args
+                msg = send_call.args[0]
+                self.assertIsNone(msg["Bcc"])
+                self.assertEqual(send_call.kwargs["to_addrs"], ["user@test.com", "audit@test.com"])
+
     def test_send_failure_returns_error(self):
         """SMTP failure should return SendResult with error."""
         import asyncio
@@ -1043,6 +1059,36 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+        "EMAIL_DEFAULT_BCC": "audit@test.com",
+    })
+    def test_send_email_tool_uses_default_bcc_envelope(self):
+        """Standalone email sending should blind-copy EMAIL_DEFAULT_BCC recipients."""
+        import asyncio
+        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from types import SimpleNamespace
+
+        async def _send_email(extra, chat_id, message):
+            return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(
+                _send_email({"address": "hermes@test.com", "smtp_host": "smtp.test.com"}, "user@test.com", "Hello")
+            )
+
+            self.assertTrue(result["success"])
+            send_call = mock_server.send_message.call_args
+            msg = send_call.args[0]
+            self.assertIsNone(msg["Bcc"])
+            self.assertEqual(send_call.kwargs["to_addrs"], ["user@test.com", "audit@test.com"])
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",

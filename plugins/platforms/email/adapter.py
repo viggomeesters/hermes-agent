@@ -171,6 +171,26 @@ def check_email_requirements() -> bool:
     return all([addr, pwd, imap, smtp])
 
 
+def _default_bcc_recipients() -> List[str]:
+    """Return default blind-copy recipients for outbound email.
+
+    Configured via EMAIL_DEFAULT_BCC as a comma/semicolon-separated list.
+    Recipients are added to the SMTP envelope only; no Bcc header is emitted.
+    """
+    raw = os.getenv("EMAIL_DEFAULT_BCC", "")
+    if not raw.strip():
+        return []
+    return [addr.strip() for addr in re.split(r"[,;]", raw) if addr.strip()]
+
+
+def _send_message_with_default_bcc(smtp: smtplib.SMTP, msg: email_lib.message.Message, to_addr: str) -> None:
+    bcc = _default_bcc_recipients()
+    if bcc:
+        smtp.send_message(msg, to_addrs=[to_addr, *bcc])
+        return
+    smtp.send_message(msg)
+
+
 def _decode_header_value(raw: str) -> str:
     """Decode an RFC 2047 encoded email header into a plain string."""
     parts = decode_header(raw)
@@ -700,7 +720,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = self._connect_smtp()
         try:
             smtp.login(self._address, self._password)
-            smtp.send_message(msg)
+            _send_message_with_default_bcc(smtp, msg, to_addr)
         finally:
             try:
                 smtp.quit()
@@ -826,7 +846,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = self._connect_smtp()
         try:
             smtp.login(self._address, self._password)
-            smtp.send_message(msg)
+            _send_message_with_default_bcc(smtp, msg, to_addr)
         finally:
             try:
                 smtp.quit()
@@ -904,7 +924,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = self._connect_smtp()
         try:
             smtp.login(self._address, self._password)
-            smtp.send_message(msg)
+            _send_message_with_default_bcc(smtp, msg, to_addr)
         finally:
             try:
                 smtp.quit()
@@ -974,7 +994,7 @@ async def _standalone_send(
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls(context=_ssl.create_default_context())
         server.login(address, password)
-        server.send_message(msg)
+        _send_message_with_default_bcc(server, msg, chat_id)
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
