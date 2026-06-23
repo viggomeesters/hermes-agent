@@ -4012,6 +4012,40 @@ class BasePlatformAdapter(ABC):
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).
 
+    def _copy_pack_for_event(self, event: MessageEvent | None = None):
+        """Return runtime copy configured for this adapter/event platform."""
+        try:
+            from gateway.copy_pack import copy_for
+            from hermes_cli.config import read_raw_config
+
+            source = getattr(event, "source", None) if event is not None else None
+            platform = getattr(source, "platform", None) or getattr(self, "platform", None)
+            platform_key = _platform_name(platform)
+            return copy_for(read_raw_config(), platform_key)
+        except Exception:
+            from gateway.copy_pack import COPY_PACKS
+
+            return COPY_PACKS["default"]
+
+    async def _send_queue_status_message(self, event: MessageEvent, content: str) -> None:
+        """Best-effort user-visible queue lifecycle update.
+
+        These messages make mobile command-bus behavior explicit: when a queued
+        follow-up starts, the visible queue count goes down; when the queued
+        batch finishes with no new pending input, the user sees that the queue is
+        empty again. Failures are intentionally non-fatal.
+        """
+        try:
+            reply_anchor = _reply_anchor_for_event(event)
+            metadata = _thread_metadata_for_source(event.source, reply_anchor)
+            await self.send(
+                chat_id=event.source.chat_id,
+                content=content,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.debug("[%s] Failed to send queue status message: %s", self.name, exc)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
@@ -5165,6 +5199,14 @@ class BasePlatformAdapter(ABC):
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
+                await self._send_queue_status_message(
+                    pending_event,
+                    self._copy_pack_for_event(pending_event).format(
+                        "current_complete",
+                        idx=pending_idx,
+                        total=pending_total,
+                    ),
+                )
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
                 # If we deleted here, a concurrent inbound message arriving
@@ -5215,12 +5257,13 @@ class BasePlatformAdapter(ABC):
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                copy = self._copy_pack_for_event(event)
                 await self.send(
                     chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
+                    content=copy.format(
+                        "processing_error",
+                        error_type=error_type,
+                        error_detail=error_detail,
                     ),
                     metadata=_thread_metadata,
                 )
@@ -5307,6 +5350,17 @@ class BasePlatformAdapter(ABC):
                         "[%s] Late-arrival pending message during cleanup — spawning drain task",
                         self.name,
                     )
+                    pending_idx, pending_total = queued_event_position(late_pending)
+                    setattr(late_pending, "_hermes_queued_turn", True)
+                    setattr(late_pending, "_hermes_queue_count_at_start", pending_total)
+                    await self._send_queue_status_message(
+                        late_pending,
+                        self._copy_pack_for_event(late_pending).format(
+                            "current_complete",
+                            idx=pending_idx,
+                            total=pending_total,
+                        ),
+                    )
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
                         _active.clear()
@@ -5325,6 +5379,11 @@ class BasePlatformAdapter(ABC):
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
             else:
+                if bool(getattr(event, "_hermes_queued_turn", False)):
+                    await self._send_queue_status_message(
+                        event,
+                        self._copy_pack_for_event(event).queue_empty,
+                    )
                 # Clean up session tracking.  Guard-match both deletes so a
                 # reset-like command that already swapped in its own
                 # command_guard (and cancelled us) can't be accidentally
