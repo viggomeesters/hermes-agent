@@ -4624,6 +4624,29 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
     messaging_cwd = os.environ.get("MESSAGING_CWD")
     terminal_cwd_env = os.environ.get("TERMINAL_CWD")
 
+    # Only call a value "found in .env" when the .env file actually has an
+    # active assignment. Comments like `# TERMINAL_CWD=.` are documentation and
+    # must not trigger the migration warning; process env may also contain an
+    # internal/config bridge set by the runtime.
+    env_file_values: dict[str, str] | None = None
+    try:
+        env_path = get_env_path()
+        if env_path.exists():
+            env_file_values = {}
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key in {"MESSAGING_CWD", "TERMINAL_CWD"}:
+                    env_file_values[key] = value.strip().strip('"').strip("'")
+    except Exception:
+        env_file_values = None
+
+    if env_file_values is not None:
+        messaging_cwd = env_file_values.get("MESSAGING_CWD")
+        terminal_cwd_env = env_file_values.get("TERMINAL_CWD")
+
     if config is None:
         try:
             config = load_config()

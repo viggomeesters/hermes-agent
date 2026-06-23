@@ -50,6 +50,20 @@ class TestDeprecatedCwdWarning:
         captured = capsys.readouterr()
         assert captured.err == ""
 
+    def test_commented_terminal_cwd_in_env_file_is_ignored(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setenv("TERMINAL_CWD", "/runtime/bridge")
+        monkeypatch.delenv("MESSAGING_CWD", raising=False)
+        env_file = tmp_path / ".env"
+        env_file.write_text("# TERMINAL_CWD=.\n", encoding="utf-8")
+
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "get_env_path", lambda: env_file)
+        config_mod.warn_deprecated_cwd_env_vars(config={"terminal": {"cwd": "."}})
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
     def test_both_deprecated_vars_warn(self, monkeypatch, capsys):
         monkeypatch.setenv("MESSAGING_CWD", "/msg/path")
         monkeypatch.setenv("TERMINAL_CWD", "/term/path")
