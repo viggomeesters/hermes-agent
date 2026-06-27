@@ -754,3 +754,95 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
+
+
+class TestMcpImportAndStatus:
+    def test_load_mcp_json_import_normalizes_servers_and_warns_on_literals(self, tmp_path):
+        import json
+
+        source = tmp_path / ".mcp.json"
+        source.write_text(json.dumps({
+            "mcpServers": {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"},
+                    "extra": "ignored",
+                },
+                "docs": {
+                    "url": "https://docs.example.com/mcp",
+                    "headers": {"Authorization": "Bearer literal-token"},
+                    "tools": {"resources": True, "prompts": False},
+                },
+            }
+        }), encoding="utf-8")
+
+        from hermes_cli.mcp_config import load_mcp_json_import
+
+        servers, warnings = load_mcp_json_import(source)
+
+        assert servers["github"]["command"] == "npx"
+        assert servers["github"]["args"] == ["-y", "@modelcontextprotocol/server-github"]
+        assert "extra" not in servers["github"]
+        assert "ignored unsupported key(s): extra" in warnings["github"]
+        assert servers["docs"]["url"] == "https://docs.example.com/mcp"
+        assert any("headers.Authorization contains a literal value" in warning for warning in warnings["docs"])
+
+    def test_import_mcp_json_dry_run_does_not_write_config(self, tmp_path):
+        import json
+
+        source = tmp_path / ".mcp.json"
+        source.write_text(json.dumps({
+            "mcpServers": {
+                "github": {"command": "npx", "args": ["@mcp/github"]},
+            }
+        }), encoding="utf-8")
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import import_mcp_json_config
+
+        imported, _warnings = import_mcp_json_config(source)
+
+        assert "github" in imported
+        assert "mcp_servers" not in load_config()
+
+    def test_import_mcp_json_write_skips_existing_without_force(self, tmp_path):
+        import json
+
+        _seed_config(tmp_path, {"github": {"command": "old"}})
+        source = tmp_path / ".mcp.json"
+        source.write_text(json.dumps({
+            "mcpServers": {
+                "github": {"command": "npx", "args": ["@mcp/github"]},
+                "docs": {"url": "https://docs.example.com/mcp"},
+            }
+        }), encoding="utf-8")
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import import_mcp_json_config
+
+        _imported, warnings = import_mcp_json_config(source, write=True)
+        config = load_config()
+
+        assert config["mcp_servers"]["github"]["command"] == "old"
+        assert config["mcp_servers"]["docs"]["url"] == "https://docs.example.com/mcp"
+        assert "skipped existing server" in warnings["github"][-1]
+
+    def test_describe_mcp_server_status_reports_transport_and_hints(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.mcp_config.shutil.which", lambda _exe: None)
+
+        from hermes_cli.mcp_config import describe_mcp_server_status
+
+        status = describe_mcp_server_status("github", {
+            "command": "npx",
+            "args": ["@mcp/github"],
+            "enabled": False,
+            "tools": {"include": ["search"], "resources": False},
+        })
+
+        assert status["transport"] == "stdio"
+        assert status["enabled"] is False
+        assert status["tool_policy"] == "1 included"
+        assert status["resources"] is False
+        assert status["prompts"] is True
+        assert any("missing executable 'npx'" in err for err in status["errors"])

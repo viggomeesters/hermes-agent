@@ -71,6 +71,23 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
     mcp_rm_p.add_argument("name", help="Server name to remove")
 
     mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
+    mcp_sub.add_parser("status", help="Show verbose MCP server diagnostics")
+
+    mcp_import_p = mcp_sub.add_parser(
+        "import",
+        help="Import Claude/Cursor/Cline .mcp.json into Hermes config (dry-run by default)",
+    )
+    mcp_import_p.add_argument("path", help="Path to .mcp.json")
+    mcp_import_p.add_argument(
+        "--write",
+        action="store_true",
+        help="Persist imported servers to config.yaml (default: dry-run)",
+    )
+    mcp_import_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing servers when used with --write",
+    )
 
     mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
     mcp_test_p.add_argument("name", help="Server name to test")

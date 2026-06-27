@@ -9,9 +9,12 @@ configuration in ~/.hermes/config.yaml under the ``mcp_servers`` key.
 """
 
 import asyncio
+import json
 import logging
 import os
+from pathlib import Path
 import re
+import shutil
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -156,6 +159,118 @@ def _parse_env_assignments(raw_env: Optional[List[str]]) -> Dict[str, str]:
     return parsed
 
 
+def _normalize_imported_mcp_server(raw: dict) -> tuple[dict, list[str]]:
+    """Normalize one Claude/Cursor/Cline-style MCP server block for Hermes.
+
+    The common ecosystem shape is already close to Hermes' ``mcp_servers``
+    entries. This function keeps the conversion intentionally conservative:
+    supported transport/auth/filtering keys are copied, unknown keys are dropped
+    with warnings, and literal env/header values are flagged so import defaults
+    can stay dry-run-only.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("server entry must be an object")
+
+    allowed = {
+        "command",
+        "args",
+        "env",
+        "url",
+        "headers",
+        "enabled",
+        "timeout",
+        "connect_timeout",
+        "supports_parallel_tool_calls",
+        "tools",
+        "auth",
+        "sampling",
+        "ssl_verify",
+        "client_cert",
+        "client_key",
+    }
+    normalized: dict[str, Any] = {}
+    warnings: list[str] = []
+
+    for key in allowed:
+        if key in raw:
+            normalized[key] = raw[key]
+
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        warnings.append(f"ignored unsupported key(s): {', '.join(unknown)}")
+
+    if "command" in normalized and "url" in normalized:
+        raise ValueError("server entry must not specify both command and url")
+    if "command" not in normalized and "url" not in normalized:
+        raise ValueError("server entry must specify command or url")
+
+    args = normalized.get("args")
+    if args is not None and not isinstance(args, list):
+        raise ValueError("args must be a list")
+
+    for container_key in ("env", "headers"):
+        value = normalized.get(container_key)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(f"{container_key} must be a mapping")
+        for item_key, item_value in value.items():
+            if not isinstance(item_key, str):
+                raise ValueError(f"{container_key} keys must be strings")
+            if isinstance(item_value, str) and item_value and "${" not in item_value:
+                warnings.append(
+                    f"{container_key}.{item_key} contains a literal value; prefer ${{ENV_VAR}} placeholders"
+                )
+
+    issues = validate_mcp_server_entry("imported", normalized)
+    warnings.extend(issues)
+    return normalized, warnings
+
+
+def load_mcp_json_import(path: str | Path) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    """Load and normalize an ecosystem ``.mcp.json`` file.
+
+    Returns ``(servers, warnings_by_server)``. Only files with a top-level
+    ``mcpServers`` object are accepted, matching Claude/Cursor/Cline convention.
+    """
+    source = Path(path).expanduser()
+    data = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("mcpServers"), dict):
+        raise ValueError("expected top-level object with mcpServers mapping")
+
+    servers: dict[str, dict] = {}
+    warnings: dict[str, list[str]] = {}
+    for name, raw in data["mcpServers"].items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("server names must be non-empty strings")
+        normalized, server_warnings = _normalize_imported_mcp_server(raw)
+        servers[name] = normalized
+        if server_warnings:
+            warnings[name] = server_warnings
+    return servers, warnings
+
+
+def import_mcp_json_config(path: str | Path, *, write: bool = False, force: bool = False) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    """Import ecosystem ``.mcp.json`` into Hermes config.
+
+    Dry-run is the default. Set ``write=True`` to persist. Existing servers are
+    skipped unless ``force=True``.
+    """
+    imported, warnings = load_mcp_json_import(path)
+    if not write:
+        return imported, warnings
+
+    config = load_config()
+    servers = config.setdefault("mcp_servers", {})
+    for name, entry in imported.items():
+        if name in servers and not force:
+            warnings.setdefault(name, []).append("skipped existing server; pass --force to overwrite")
+            continue
+        servers[name] = entry
+    save_config(config)
+    return imported, warnings
+
+
 def _apply_mcp_preset(
     name: str,
     *,
@@ -292,6 +407,39 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
     if isinstance(exc, Exception):
         return exc
     return RuntimeError(str(exc))
+
+
+# ─── hermes mcp import ────────────────────────────────────────────────────────
+
+def cmd_mcp_import(args):
+    """Import Claude/Cursor/Cline-style .mcp.json configs."""
+    path = getattr(args, "path", "")
+    write = bool(getattr(args, "write", False))
+    force = bool(getattr(args, "force", False))
+
+    try:
+        imported, warnings = import_mcp_json_config(path, write=write, force=force)
+    except Exception as exc:  # noqa: BLE001 - CLI should render concise import errors
+        _error(f"Import failed: {exc}")
+        return
+
+    print()
+    print(color("  MCP import dry-run" if not write else "  MCP import", Colors.CYAN + Colors.BOLD))
+    print()
+    for name, cfg in imported.items():
+        transport = _mcp_transport_label(cfg)
+        action = "would import" if not write else "imported"
+        if write and warnings.get(name) and any("skipped existing" in w for w in warnings[name]):
+            action = "skipped"
+        print(f"  {name:<20} {transport:<10} {action}")
+        for warning in warnings.get(name, []):
+            _warning(f"{name}: {warning}")
+    print()
+    if not write:
+        _info("Dry-run only. Re-run with --write to persist to config.yaml.")
+    else:
+        _info("Start a new session to use imported MCP tools.")
+    print()
 
 
 # ─── hermes mcp add ──────────────────────────────────────────────────────────
@@ -528,6 +676,88 @@ def cmd_mcp_remove(args):
         _success("Cleaned up OAuth tokens")
     except Exception:
         pass
+
+
+# ─── hermes mcp list/status ───────────────────────────────────────────────────
+
+def _mcp_transport_label(cfg: dict) -> str:
+    if "url" in cfg:
+        return "http/sse"
+    if "command" in cfg:
+        return "stdio"
+    return "unknown"
+
+
+def _mcp_executable_hint(cfg: dict) -> str:
+    command = cfg.get("command")
+    if not command:
+        return ""
+    exe = str(command).split()[0]
+    if shutil.which(exe):
+        return ""
+    if exe in {"npx", "node", "npm", "pnpm", "yarn"}:
+        return f"missing executable '{exe}' (install Node.js/npm or change command)"
+    if exe in {"uv", "uvx"}:
+        return f"missing executable '{exe}' (install uv or change command)"
+    return f"missing executable '{exe}'"
+
+
+def describe_mcp_server_status(name: str, cfg: dict) -> dict[str, Any]:
+    """Return non-connecting status/diagnostic metadata for one MCP server."""
+    tools_cfg = cfg.get("tools", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(tools_cfg, dict):
+        tools_cfg = {}
+    include = tools_cfg.get("include")
+    exclude = tools_cfg.get("exclude")
+    if isinstance(include, list):
+        tool_policy = f"{len(include)} included"
+    elif isinstance(exclude, list):
+        tool_policy = f"{len(exclude)} excluded"
+    else:
+        tool_policy = "all"
+
+    errors = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else ["server config must be a mapping"]
+    hint = _mcp_executable_hint(cfg) if isinstance(cfg, dict) else ""
+    if hint:
+        errors = [*errors, hint]
+
+    return {
+        "name": name,
+        "transport": _mcp_transport_label(cfg) if isinstance(cfg, dict) else "unknown",
+        "source": "config.yaml",
+        "enabled": bool(cfg.get("enabled", True)) if isinstance(cfg, dict) else False,
+        "tool_policy": tool_policy,
+        "resources": tools_cfg.get("resources", True),
+        "prompts": tools_cfg.get("prompts", True),
+        "errors": errors,
+    }
+
+
+def cmd_mcp_status(args=None):
+    """Show verbose non-connecting MCP server diagnostics."""
+    servers = _get_mcp_servers()
+    if not servers:
+        print()
+        _info("No MCP servers configured.")
+        print()
+        return
+
+    print()
+    print(color("  MCP Status:", Colors.CYAN + Colors.BOLD))
+    print()
+    for name, cfg in servers.items():
+        status = describe_mcp_server_status(name, cfg)
+        state = "enabled" if status["enabled"] else "disabled"
+        print(color(f"  {name}", Colors.GREEN if status["enabled"] else Colors.DIM))
+        _info(f"transport: {status['transport']}")
+        _info(f"source: {status['source']}")
+        _info(f"status: {state}")
+        _info(f"tools: {status['tool_policy']}")
+        _info(f"resources: {status['resources']}")
+        _info(f"prompts: {status['prompts']}")
+        for err in status["errors"]:
+            _warning(str(err))
+        print()
 
 
 # ─── hermes mcp list ──────────────────────────────────────────────────────────
@@ -884,6 +1114,8 @@ def mcp_command(args):
         "rm": cmd_mcp_remove,
         "list": cmd_mcp_list,
         "ls": cmd_mcp_list,
+        "status": cmd_mcp_status,
+        "import": cmd_mcp_import,
         "test": cmd_mcp_test,
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
