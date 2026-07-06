@@ -259,6 +259,84 @@ def build_auto_tts_output_path(platform) -> str:
     )
     os.makedirs(os.path.dirname(audio_path), exist_ok=True)
     return audio_path
+def _display_platform_config(platform) -> dict:
+    """Return display.platforms.<platform> from config.yaml, fail-soft.
+
+    This lives at the delivery boundary: the full assistant turn can stay in
+    session history while noisy mobile surfaces receive a shorter visible copy.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_config
+        cfg = _load_config()
+    except Exception:
+        return {}
+    display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+    platforms = display.get("platforms", {}) if isinstance(display, dict) else {}
+    platform_cfg = platforms.get(_platform_name(platform), {}) if isinstance(platforms, dict) else {}
+    return platform_cfg if isinstance(platform_cfg, dict) else {}
+
+
+def _positive_int_or_none(value) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _with_delivery_truncation_suffix(body: str, max_chars: int | None) -> str:
+    """Append the truncation suffix while respecting a UTF-16 delivery cap."""
+    suffix = "\n\n… Detail bewaard in sessie. Vraag ‘detail’ als nodig."
+    if not max_chars:
+        return f"{body.rstrip()}{suffix}"
+
+    suffix_len = utf16_len(suffix)
+    if suffix_len >= max_chars:
+        # Pathological config (e.g. 20 chars): still obey the hard cap. The
+        # ellipsis is enough signal; logs/session transcript retain the full text.
+        return _prefix_within_utf16_limit("…", max_chars)
+
+    budget = max_chars - suffix_len
+    return f"{_prefix_within_utf16_limit(body, budget).rstrip()}{suffix}"
+
+
+def _compact_gateway_text_for_delivery(platform, text: str) -> str:
+    """Apply optional per-platform final-reply delivery caps.
+
+    Prompt/skill brevity is a soft contract. This is the hard mobile-inbox guard:
+    when configured, Telegram never receives multi-screen final text unless the
+    cap is disabled or raised. The unmodified assistant response remains in the
+    gateway session transcript before this delivery step.
+    """
+    if not text:
+        return text
+    platform_cfg = _display_platform_config(platform)
+    max_lines = _positive_int_or_none(
+        platform_cfg.get("final_reply_max_lines", platform_cfg.get("max_final_lines"))
+    )
+    max_chars = _positive_int_or_none(
+        platform_cfg.get("final_reply_max_chars", platform_cfg.get("max_final_chars"))
+    )
+    if not max_lines and not max_chars:
+        return text
+
+    compacted = str(text)
+    truncated = False
+
+    if max_lines:
+        lines = compacted.splitlines()
+        if len(lines) > max_lines:
+            compacted = "\n".join(lines[:max_lines]).rstrip()
+            truncated = True
+
+    if max_chars and utf16_len(compacted) > max_chars:
+        truncated = True
+
+    if truncated:
+        return _with_delivery_truncation_suffix(compacted, max_chars)
+    return compacted
 
 
 def utf16_len(s: str) -> int:
@@ -6707,6 +6785,12 @@ class BasePlatformAdapter(ABC):
                                 _tts_path = _tts_paths[0] if _tts_paths else None
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+
+                # Apply configured final-reply delivery caps at the last
+                # possible boundary so transcripts retain the full assistant
+                # response. Keep upstream's voice-first delivery order.
+                if text_content:
+                    text_content = _compact_gateway_text_for_delivery(self.platform, text_content)
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
