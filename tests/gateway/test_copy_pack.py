@@ -40,3 +40,50 @@ def test_bertus_processing_error_copy_replaces_sorry_try_again():
     assert "Niet gelukt; opnieuw sturen of /reset." in message
     assert "Sorry" not in message
     assert "Try again" not in message
+
+
+
+def test_external_copy_pack_dir_overrides_builtin(tmp_path):
+    pack_dir = tmp_path / "packs"
+    pack_dir.mkdir()
+    (pack_dir / "bertus.json").write_text(
+        """
+        {
+          "name": "bertus",
+          "messages": {
+            "current_complete": "External done {idx}/{total}",
+            "queue_empty": "External empty",
+            "queue_full_current": "External full {count}/{max_pending}{status_detail}",
+            "queue_full_drain": "External drain full {action}",
+            "queued_drain": "External queued {action}",
+            "drain_not_accepting": "External no {action}",
+            "busy_queue": "External busy {count}{status_detail}",
+            "busy_queue_subagent": "External sub {count}{status_detail}",
+            "busy_steer": "External steer{status_detail}",
+            "busy_interrupt": "External interrupt{status_detail}",
+            "processing_error": "External error {error_type}: {error_detail}"
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    cfg = {
+        "display": {
+            "copy_pack_dirs": [str(pack_dir)],
+            "platforms": {"telegram": {"copy_pack": "bertus"}},
+        }
+    }
+
+    assert resolve_copy_pack(cfg, "telegram") == "bertus"
+    assert copy_for(cfg, "telegram").queue_empty == "External empty"
+    assert copy_for(cfg, "telegram").format("current_complete", idx=2, total=5) == "External done 2/5"
+
+
+def test_invalid_external_copy_pack_falls_back_to_default(tmp_path):
+    pack_dir = tmp_path / "packs"
+    pack_dir.mkdir()
+    (pack_dir / "broken.json").write_text('{"name":"broken","messages":{"queue_empty":"missing required"}}')
+    cfg = {"display": {"copy_pack_dirs": [str(pack_dir)], "copy_pack": "broken"}}
+
+    assert resolve_copy_pack(cfg, None) == "default"
+    assert copy_for(cfg).queue_empty == "✅ Queue empty."
