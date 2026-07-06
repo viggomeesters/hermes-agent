@@ -25,7 +25,11 @@ def test_gateway_delivery_cap_truncates_telegram_chars(monkeypatch):
     compacted = base._compact_gateway_text_for_delivery(Platform.TELEGRAM, text)
 
     assert base.utf16_len(compacted) <= 120
-    assert compacted.endswith("Vraag ‘detail’ als nodig.")
+    assert compacted.endswith("…")
+    forbidden_detail = "Detail" + " bewaard"
+    forbidden_prompt = "Vraag " + "‘detail’"
+    assert forbidden_detail not in compacted
+    assert forbidden_prompt not in compacted
     assert compacted.startswith("A")
 
 
@@ -36,7 +40,8 @@ def test_gateway_delivery_cap_obeys_tiny_char_caps(monkeypatch):
     compacted = base._compact_gateway_text_for_delivery(Platform.TELEGRAM, text)
 
     assert base.utf16_len(compacted) <= 10
-    assert compacted == "…"
+    assert compacted.endswith("…")
+    assert compacted.startswith("A")
 
 
 def test_gateway_delivery_line_cap_with_char_cap_stays_under_limit(monkeypatch):
@@ -57,7 +62,11 @@ def test_gateway_delivery_cap_truncates_telegram_lines(monkeypatch):
 
     assert compacted.startswith("one\ntwo\nthree")
     assert "four" not in compacted
-    assert compacted.endswith("Vraag ‘detail’ als nodig.")
+    assert compacted.endswith("…")
+    forbidden_detail = "Detail" + " bewaard"
+    forbidden_prompt = "Vraag " + "‘detail’"
+    assert forbidden_detail not in compacted
+    assert forbidden_prompt not in compacted
 
 
 def test_gateway_delivery_cap_ignores_other_platforms_without_config(monkeypatch):

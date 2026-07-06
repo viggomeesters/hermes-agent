@@ -287,8 +287,8 @@ def _positive_int_or_none(value) -> int | None:
 
 
 def _with_delivery_truncation_suffix(body: str, max_chars: int | None) -> str:
-    """Append the truncation suffix while respecting a UTF-16 delivery cap."""
-    suffix = "\n\n… Detail bewaard in sessie. Vraag ‘detail’ als nodig."
+    """Append a minimal truncation marker while respecting a UTF-16 cap."""
+    suffix = "\n\n…"
     if not max_chars:
         return f"{body.rstrip()}{suffix}"
 
