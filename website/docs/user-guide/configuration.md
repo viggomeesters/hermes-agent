@@ -1412,6 +1412,8 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
+  copy_pack: default      # Gateway runtime/status copy pack name
+  copy_pack_dirs: []      # Optional dirs containing external copy-pack JSON files
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
@@ -1492,6 +1494,21 @@ Example footer appended to a Telegram/Discord/Slack reply:
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.
+
+### Gateway runtime copy packs
+
+Gateway queue/busy/error status copy is selected with `display.copy_pack`, and can be overridden per platform through `display.platforms.<platform>.copy_pack`. Deployments can keep persona-specific copy outside Hermes core by pointing `display.copy_pack_dirs` at one or more directories containing JSON files named like `<pack>.json`:
+
+```yaml
+display:
+  copy_pack_dirs:
+    - ~/.hermes/copy_packs
+  platforms:
+    telegram:
+      copy_pack: bertus
+```
+
+Each JSON pack contains a `name` plus all required queue lifecycle message templates. Invalid or incomplete packs are ignored and Hermes falls back to `default` rather than blocking the gateway.
 
 ### Per-platform progress overrides
 
