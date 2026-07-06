@@ -75,37 +75,7 @@ COPY_PACKS: dict[str, QueueCopy] = {
             "Try again or use /reset to start a fresh session."
         ),
     ),
-    # Back-compat for existing deployments. New deployment-specific copy should
-    # live in JSON files loaded via display.copy_pack_dirs, not in Hermes core.
-    "bertus": QueueCopy(
-        current_complete="Klus klaar. Ik pak backlog taak {idx} op.",
-        queue_empty="Backlog leeg.",
-        queue_full_current=(
-            "Backlog vol ({count}/{max_pending}){status_detail}. "
-            "Niet gelukt; stuur opnieuw als de huidige klus klaar is."
-        ),
-        queue_full_drain=(
-            "Backlog vol — ik kon dit niet bewaren terwijl de gateway {action}. "
-            "Stuur opnieuw zodra hij terug is."
-        ),
-        queued_drain="Gateway {action}. Ik heb dit in de backlog gezet.",
-        drain_not_accepting="Gateway {action}; ik neem nu geen extra klus aan.",
-        busy_queue=(
-            "Ik ben al bezig; dit is backlog taak {count}{status_detail}. "
-            "Ik pak ’m vanzelf op."
-        ),
-        busy_queue_subagent=(
-            "Ik ben al bezig met subagents; dit is backlog taak {count}{status_detail}. "
-            "Ik pak ’m op zodra die klus klaar is. /stop breekt alles af."
-        ),
-        busy_steer="Ik heb ’m bij de lopende klus gezet{status_detail}; na de volgende toolcall lees ik ’m mee.",
-        busy_interrupt="Ik kap de huidige klus af{status_detail}. Ik pak je nieuwe bericht zo op.",
-        processing_error=(
-            "Daar ging iets stuk ({error_type}).\n"
-            "Ik heb dit nodig: {error_detail}\n"
-            "Niet gelukt; opnieuw sturen of /reset."
-        ),
-    ),
+
 }
 
 
