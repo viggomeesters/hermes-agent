@@ -1693,7 +1693,8 @@ DEFAULT_CONFIG = {
         # "Steered into current run" confirmation bubble by setting this false.
         # The mid-turn steering itself still happens.
         "busy_steer_ack_enabled": True,
-        "copy_pack": "default",  # gateway runtime/status copy: default | bertus
+        "copy_pack": "default",  # gateway runtime/status copy pack name
+        "copy_pack_dirs": [],  # Optional dirs containing external gateway copy-pack JSON files
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)
