@@ -57,6 +57,14 @@ from gateway.platforms.base import (  # noqa: E402
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _default_gateway_copy(monkeypatch):
+    """Keep these generic gateway tests independent of local copy-pack config."""
+    import gateway.run as _gr
+
+    monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Builders (parallel to tests/gateway/test_busy_session_ack.py)
 # ──────────────────────────────────────────────────────────────────────

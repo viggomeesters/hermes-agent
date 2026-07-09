@@ -283,20 +283,12 @@ class TestQueueConsumptionAfterCompletion:
         adapter._pending_messages[session_key] = interrupt_follow_up
 
         # Promotion must NOT overwrite the interrupt follow-up; Q2 should
-        # move into a position that runs AFTER it.  In the current design
-        # the overflow head is staged in the slot AFTER the interrupt
-        # follow-up's turn runs — so here, the slot keeps the interrupt
-        # and Q2 stays queued.  Verify we return the interrupt event and
-        # Q2 is positioned to run next.
+        # move into a position that runs AFTER it.  The slot keeps the
+        # interrupt and Q2 is pushed back onto overflow.
         returned = runner._promote_queued_event(session_key, adapter, interrupt_follow_up)
         assert returned is interrupt_follow_up
-        # Q2 was moved into the slot, evicting the interrupt? No —
-        # current implementation puts Q2 in the slot unconditionally,
-        # overwriting the interrupt.  This is an acceptable edge-case
-        # trade-off: /queue items always run after the currently-staged
-        # pending_event (which is what `returned` is), and the slot
-        # gets the next-in-line item.
-        assert adapter._pending_messages[session_key].text == "Q2"
+        assert adapter._pending_messages[session_key] is interrupt_follow_up
+        assert [event.text for event in runner._queued_events[session_key]] == ["Q2"]
 
     def test_queue_depth_counts_slot_plus_overflow(self):
         from gateway.run import GatewayRunner

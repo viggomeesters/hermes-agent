@@ -42,8 +42,8 @@ def test_copy_pack_resolves_platform_override_from_external_dir(tmp_path):
     assert copy_for(cfg, "telegram").queue_empty == "Backlog leeg."
 
 
-def test_unknown_bertus_without_external_pack_falls_back_to_default():
-    cfg = {"display": {"platforms": {"telegram": {"copy_pack": "bertus"}}}}
+def test_unknown_copy_pack_without_external_pack_falls_back_to_default():
+    cfg = {"display": {"platforms": {"telegram": {"copy_pack": "missing-persona-pack"}}}}
 
     assert resolve_copy_pack(cfg, "telegram") == "default"
     assert copy_for(cfg, "telegram").queue_empty == "✅ Queue empty."

@@ -4442,7 +4442,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if pending_event is None:
             return next_queued
         if adapter is not None and hasattr(adapter, "_pending_messages"):
-            adapter._pending_messages[session_key] = next_queued
+            pending_slot = getattr(adapter, "_pending_messages", {})
+            if session_key in pending_slot:
+                # A concurrent arrival repopulated the head slot while this
+                # drain was promoting overflow.  Preserve FIFO instead of
+                # clobbering that freshly queued turn.
+                queued_events.setdefault(session_key, []).insert(0, next_queued)
+            else:
+                pending_slot[session_key] = next_queued
         else:
             # No adapter — push back so we don't silently drop the item.
             queued_events.setdefault(session_key, []).insert(0, next_queued)

@@ -4965,6 +4965,39 @@ class BasePlatformAdapter(ABC):
                 event.source.chat_id,
                 typing_task,
             )
+
+        def queued_event_position(queued_event: MessageEvent) -> tuple[int, int]:
+            """Best-effort queued-turn position for status copy.
+
+            Queue lifecycle messages are user-visible telemetry, not the actual
+            turn execution.  Missing/stale metadata must therefore fall back to
+            1/1 instead of crashing the drain path.
+            """
+            raw_total = getattr(queued_event, "_hermes_queue_count_at_start", 1)
+            raw_idx = getattr(queued_event, "_hermes_queue_idx", None)
+            try:
+                total = max(1, int(raw_total))
+            except (TypeError, ValueError):
+                total = 1
+            try:
+                idx = max(1, int(raw_idx)) if raw_idx is not None else 1
+            except (TypeError, ValueError):
+                idx = 1
+            return min(idx, total), total
+
+        def current_complete_copy(queued_event: MessageEvent) -> str:
+            idx, total = queued_event_position(queued_event)
+            setattr(queued_event, "_hermes_queued_turn", True)
+            setattr(queued_event, "_hermes_queue_count_at_start", total)
+            try:
+                return self._copy_pack_for_event(queued_event).format(
+                    "current_complete",
+                    idx=idx,
+                    total=total,
+                )
+            except Exception as exc:
+                logger.debug("[%s] Failed to format queue current_complete copy: %s", self.name, exc)
+                return f"✅ Current task complete. Queue item {idx}/{total} → processing queued turn now."
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -5287,11 +5320,7 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 await self._send_queue_status_message(
                     pending_event,
-                    self._copy_pack_for_event(pending_event).format(
-                        "current_complete",
-                        idx=pending_idx,
-                        total=pending_total,
-                    ),
+                    current_complete_copy(pending_event),
                 )
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
@@ -5436,16 +5465,9 @@ class BasePlatformAdapter(ABC):
                         "[%s] Late-arrival pending message during cleanup — spawning drain task",
                         self.name,
                     )
-                    pending_idx, pending_total = queued_event_position(late_pending)
-                    setattr(late_pending, "_hermes_queued_turn", True)
-                    setattr(late_pending, "_hermes_queue_count_at_start", pending_total)
                     await self._send_queue_status_message(
                         late_pending,
-                        self._copy_pack_for_event(late_pending).format(
-                            "current_complete",
-                            idx=pending_idx,
-                            total=pending_total,
-                        ),
+                        current_complete_copy(late_pending),
                     )
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
