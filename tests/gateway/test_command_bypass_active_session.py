@@ -366,7 +366,7 @@ class TestNonBypassStillQueued:
         assert len(adapter.sent_responses) == 1, (
             "Regular text should produce only the visible queue ACK"
         )
-        assert "Queue item" in adapter.sent_responses[0] or "Backlog" in adapter.sent_responses[0]
+        assert "Queue item" in adapter.sent_responses[0] or "Backlog" in adapter.sent_responses[0] or "Queue #" in adapter.sent_responses[0]
 
     @pytest.mark.asyncio
     async def test_unknown_command_queued(self):
@@ -379,7 +379,7 @@ class TestNonBypassStillQueued:
 
         assert sk in adapter._pending_messages
         assert len(adapter.sent_responses) == 1
-        assert "Queue item" in adapter.sent_responses[0] or "Backlog" in adapter.sent_responses[0]
+        assert "Queue item" in adapter.sent_responses[0] or "Backlog" in adapter.sent_responses[0] or "Queue #" in adapter.sent_responses[0]
 
     @pytest.mark.asyncio
     async def test_file_path_not_treated_as_command(self):
@@ -392,7 +392,7 @@ class TestNonBypassStillQueued:
 
         assert sk in adapter._pending_messages
         assert len(adapter.sent_responses) == 1
-        assert "Queue item" in adapter.sent_responses[0] or "Backlog" in adapter.sent_responses[0]
+        assert "Queue item" in adapter.sent_responses[0] or "Backlog" in adapter.sent_responses[0] or "Queue #" in adapter.sent_responses[0]
 
 
 # ---------------------------------------------------------------------------

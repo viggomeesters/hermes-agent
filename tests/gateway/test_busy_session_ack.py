@@ -71,6 +71,7 @@ def _make_runner():
     runner._running_agents_ts = {}
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
+    runner._busy_queue_ack_seq = {}
     runner._draining = False
     runner._busy_text_mode = "interrupt"
     runner.adapters = {}
@@ -178,6 +179,51 @@ class TestBusySessionAck:
             "third",
         ]
         agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_ack_uses_visible_sequence_not_backlog_delta(self, monkeypatch):
+        """Every accepted queue follow-up gets Queue #1, #2, #3 without +1 copy."""
+        import gateway.run as _gr
+
+        class _Copy:
+            def format(self, key, **kwargs):
+                if key == "busy_queue":
+                    return f"Queue #{kwargs['queue_number']}. Ik pak ’m hierna."
+                raise AssertionError(key)
+
+        monkeypatch.setattr(_gr, "_runtime_copy_for_source", lambda _source: _Copy())
+        monkeypatch.setattr("agent.onboarding.is_seen", lambda _flag: True)
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+        runner._running_agents[sk] = MagicMock()
+        runner._running_agents_ts[sk] = time.time()
+
+        events = [
+            MessageEvent(text=f"msg {idx}", message_type=MessageType.TEXT, source=source, message_id=f"m-{idx}")
+            for idx in range(1, 4)
+        ]
+        for event in events:
+            result = await runner._handle_active_session_busy_message(event, sk)
+            assert result is True
+
+        contents = [call.kwargs.get("content", "") for call in adapter._send_with_retry.call_args_list]
+        assert contents == [
+            "Queue #1. Ik pak ’m hierna.",
+            "Queue #2. Ik pak ’m hierna.",
+            "Queue #3. Ik pak ’m hierna.",
+        ]
+        assert all("+1" not in content for content in contents)
 
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):

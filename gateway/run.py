@@ -2960,6 +2960,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
+        self._busy_queue_ack_seq: Dict[str, int] = {}  # visible queue # counter per active session
         self._session_run_generation: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions are being
         # auto-resumed, real inbound messages are queued instead of competing
@@ -4463,6 +4464,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             depth += 1
         return depth
 
+    def _next_busy_queue_ack_number(self, session_key: str) -> int:
+        """Return the next visible busy-queue ACK number for one active run."""
+        seq = getattr(self, "_busy_queue_ack_seq", None)
+        if not isinstance(seq, dict):
+            seq = {}
+            self._busy_queue_ack_seq = seq
+        next_number = int(seq.get(session_key, 0)) + 1
+        seq[session_key] = next_number
+        return next_number
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
@@ -5536,11 +5547,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Debounce before consulting config-heavy display settings. Rapid
         # follow-ups should be processed but should not trigger another config
-        # read just to discover that no ack will be sent.
+        # read just to discover that no ack will be sent. Queue mode is the
+        # exception: every accepted follow-up needs its own visible Queue #N
+        # receipt so the user can see what was stored.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
         last_ack = self._busy_ack_ts.get(session_key, 0)
-        if now - last_ack < _BUSY_ACK_COOLDOWN:
+        if not is_queue_mode and now - last_ack < _BUSY_ACK_COOLDOWN:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
         from gateway.display_config import resolve_display_setting
@@ -5603,7 +5616,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         queued_count = self._queue_depth(session_key, adapter=adapter)
         queue_badge = "Queue item 1/1"
+        queue_number = 1
         if is_queue_mode:
+            queue_number = self._next_busy_queue_ack_number(session_key) if queued else queued_count
             queue_badge = f"Queue item {queued_count}/{queued_count}"
         copy = _runtime_copy_for_source(event.source)
         if is_steer_mode:
@@ -5615,6 +5630,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             message = copy.format(
                 "busy_queue_subagent",
                 queue_badge=queue_badge,
+                queue_number=queue_number,
                 count=queued_count,
                 status_detail=status_detail,
             )
@@ -5623,6 +5639,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message = copy.format(
                     "busy_queue",
                     queue_badge=queue_badge,
+                    queue_number=queue_number,
                     count=queued_count,
                     status_detail=status_detail,
                 )
@@ -8341,6 +8358,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
+            if hasattr(self, '_busy_queue_ack_seq'):
+                self._busy_queue_ack_seq.clear()
             self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
@@ -16004,6 +16023,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        if hasattr(self, "_busy_queue_ack_seq"):
+            self._busy_queue_ack_seq.pop(session_key, None)
         # Turn boundary: a running-agent slot was just released.  Persist the
         # new (lower) in-flight count so the dashboard readout stays current
         # between lifecycle transitions.  Preserves gateway_state (see

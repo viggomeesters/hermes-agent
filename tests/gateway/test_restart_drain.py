@@ -69,7 +69,7 @@ async def test_drain_queue_mode_queues_follow_up_without_interrupt():
     assert adapter._pending_messages[session_key].text == "follow up"
     assert not adapter._active_sessions[session_key].is_set()
     assert any(
-        "queued for the next turn" in message or "Queue item" in message or "Backlog" in message
+        "queued for the next turn" in message or "Queue item" in message or "Backlog" in message or "Queue" in message
         for message in adapter.sent
     )
 
