@@ -412,6 +412,106 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
+    def test_openai_codex_gpt54_groups_functions_for_native_tool_search(self, transport):
+        """gpt-5.4+ Codex uses hosted tool search instead of front-loading schemas."""
+        function_tools = [
+            {"type": "function", "function": {
+                "name": name,
+                "description": f"Use {name}.",
+                "parameters": {"type": "object", "properties": {
+                    "value": {"type": "string"},
+                }},
+            }}
+            for name in (
+                "read_file", "write_file", "terminal", "process",
+                "browser_navigate", "browser_click", "skill_view", "memory",
+            )
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Inspect the project."}],
+            tools=function_tools,
+            is_codex_backend=True,
+        )
+
+        tools = kw["tools"]
+        assert {"type": "tool_search"} in tools
+        namespaces = [tool for tool in tools if tool.get("type") == "namespace"]
+        assert namespaces
+        nested = [fn for namespace in namespaces for fn in namespace["tools"]]
+        assert {fn["name"] for fn in nested} == {
+            tool["function"]["name"] for tool in function_tools
+        }
+        assert all(fn["defer_loading"] is True for fn in nested)
+        assert all(len(namespace["tools"]) <= 8 for namespace in namespaces)
+        assert all(tool["defer_loading"] is True for ns in namespaces for tool in ns["tools"])
+        assert not any(tool.get("type") == "function" for tool in tools)
+
+    def test_openai_codex_native_tool_search_has_kill_switch(self, transport, monkeypatch):
+        monkeypatch.setenv("HERMES_CODEX_NATIVE_TOOL_SEARCH", "0")
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": f"tool_{index}",
+                "description": "Test.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        } for index in range(8)]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "test"}],
+            tools=tools,
+            is_codex_backend=True,
+        )
+
+        assert all(tool["type"] == "function" for tool in kw["tools"])
+        assert {"type": "tool_search"} not in kw["tools"]
+
+    def test_openai_codex_native_search_stays_outside_tool_namespaces(self, transport):
+        tools = [
+            {"type": "function", "function": {
+                "name": name, "description": f"Use {name}.",
+                "parameters": {"type": "object", "properties": {}}}}
+            for name in (
+                "read_file", "write_file", "terminal", "process",
+                "browser_navigate", "browser_click", "skill_view", "memory",
+            )
+        ] + [
+            {"type": "function", "function": {
+                "name": "web_search", "description": "Search.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Research."}],
+            tools=tools,
+            is_codex_backend=True,
+        )
+
+        assert {"type": "web_search"} in kw["tools"]
+        assert {"type": "tool_search"} in kw["tools"]
+        nested_names = {
+            fn["name"]
+            for namespace in kw["tools"] if namespace.get("type") == "namespace"
+            for fn in namespace["tools"]
+        }
+        assert "read_file" in nested_names
+        assert "web_search" not in nested_names
+
+    def test_openai_codex_pre_gpt54_keeps_eager_functions(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.3-codex",
+            messages=[{"role": "user", "content": "Read."}],
+            tools=[{"type": "function", "function": {
+                "name": "read_file", "description": "Read.",
+                "parameters": {"type": "object", "properties": {}}}}],
+            is_codex_backend=True,
+        )
+        assert not any(tool.get("type") == "tool_search" for tool in kw["tools"])
+        assert any(tool.get("type") == "function" for tool in kw["tools"])
+
     def test_xai_reasoning_disabled_no_reasoning_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

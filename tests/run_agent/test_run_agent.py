@@ -5346,6 +5346,10 @@ class TestHookPayloadSanitizesSimpleNamespace:
             role="assistant",
             content="",
             tool_calls=[tool_call],
+            provider_data={
+                "provider_metrics": {"prompt_cache_retention": "24h"},
+                "codex_citations": [{"url": "https://example.com"}],
+            },
         )
         response = SimpleNamespace(model="anthropic.claude-3", usage=None)
 
@@ -5358,6 +5362,12 @@ class TestHookPayloadSanitizesSimpleNamespace:
         normalized_call = payload["assistant_message"]["tool_calls"][0]
         assert normalized_call["id"] == "call_1"
         assert normalized_call["function"]["name"] == "web_search"
+        assert payload["assistant_message"]["provider_data"]["provider_metrics"] == {
+            "prompt_cache_retention": "24h"
+        }
+        assert payload["assistant_message"]["provider_data"]["codex_citations"] == [
+            {"url": "https://example.com"}
+        ]
 
 
 class TestRetryExhaustion:

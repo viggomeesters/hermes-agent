@@ -644,6 +644,9 @@ def _consume_codex_event_stream(
     active_message_phase: str | None = None
     terminal_status: str = "completed"
     terminal_usage: Any = None
+    terminal_tool_usage: Any = None
+    terminal_prompt_cache_retention: str | None = None
+    terminal_service_tier: str | None = None
     terminal_response_id: str = None
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
@@ -743,12 +746,15 @@ def _consume_codex_event_stream(
             saw_terminal = True
             resp_obj = _event_field(event, "response")
             if resp_obj is not None:
-                terminal_usage = getattr(resp_obj, "usage", None)
-                if terminal_usage is None and isinstance(resp_obj, dict):
-                    terminal_usage = resp_obj.get("usage")
-                rid = getattr(resp_obj, "id", None)
-                if rid is None and isinstance(resp_obj, dict):
-                    rid = resp_obj.get("id")
+                terminal_usage = _event_field(resp_obj, "usage")
+                terminal_tool_usage = _event_field(resp_obj, "tool_usage")
+                cache_retention = _event_field(resp_obj, "prompt_cache_retention")
+                if isinstance(cache_retention, str):
+                    terminal_prompt_cache_retention = cache_retention
+                service_tier = _event_field(resp_obj, "service_tier")
+                if isinstance(service_tier, str):
+                    terminal_service_tier = service_tier
+                rid = _event_field(resp_obj, "id")
                 terminal_response_id = rid
                 rstatus = getattr(resp_obj, "status", None)
                 if rstatus is None and isinstance(resp_obj, dict):
@@ -805,6 +811,9 @@ def _consume_codex_event_stream(
         output=output,
         output_text=assembled_text,
         usage=terminal_usage,
+        tool_usage=terminal_tool_usage,
+        prompt_cache_retention=terminal_prompt_cache_retention,
+        service_tier=terminal_service_tier,
         status=terminal_status,
         id=terminal_response_id,
         model=model,

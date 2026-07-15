@@ -7,10 +7,96 @@ streaming, or the _run_codex_stream() call path.
 
 import hashlib
 import json
+import os
+import re
+from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+
+_CODEX_NATIVE_TOOL_SEARCH_MIN_FUNCTIONS = 8
+_CODEX_NAMESPACE_MAX_FUNCTIONS = 8
+
+
+def _codex_supports_native_tool_search(model: str) -> bool:
+    """Return whether the Codex model supports hosted ``tool_search``."""
+    match = re.search(r"(?:^|/)gpt-(\d+)\.(\d+)", str(model or "").lower())
+    if not match:
+        return False
+    return (int(match.group(1)), int(match.group(2))) >= (5, 4)
+
+
+def _codex_native_tool_search_enabled(params: Dict[str, Any]) -> bool:
+    """Allow a per-request override and an operational environment kill switch."""
+    if params.get("native_tool_search", True) is False:
+        return False
+    env_value = os.getenv("HERMES_CODEX_NATIVE_TOOL_SEARCH", "").strip().lower()
+    return env_value not in {"0", "false", "no", "off", "disabled"}
+
+
+def _codex_tool_category(name: str) -> str:
+    """Map Hermes function names to compact, model-searchable namespaces."""
+    normalized = str(name or "").strip().lower()
+    if normalized.startswith("mcp__"):
+        parts = normalized.split("__")
+        server = parts[1] if len(parts) > 2 and parts[1] else "tools"
+        return f"mcp_{server}"
+    if normalized.startswith("browser_"):
+        return "browser"
+    if normalized in {"terminal", "process"}:
+        return "terminal"
+    if normalized in {"read_file", "write_file", "search_files", "patch"}:
+        return "files"
+    if normalized.startswith("skill_") or normalized == "skills_list":
+        return "skills"
+    if normalized in {"memory", "fact_store", "fact_feedback", "session_search"}:
+        return "memory"
+    if normalized in {"image_generate", "vision_analyze", "text_to_speech"}:
+        return "media"
+    if normalized in {"cronjob", "delegate_task", "clarify", "todo"}:
+        return "workflow"
+    if normalized.startswith("web_"):
+        return "web"
+    return "general"
+
+
+def _codex_native_tool_search_tools(
+    tools: Optional[List[Dict[str, Any]]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Group function tools into deferred namespaces for hosted tool search.
+
+    Built-ins remain top-level. Namespaces are capped at eight functions because
+    OpenAI recommends fewer than ten functions per namespace for search quality.
+    """
+    if not tools:
+        return tools
+    functions = [tool for tool in tools if tool.get("type") == "function"]
+    if len(functions) < _CODEX_NATIVE_TOOL_SEARCH_MIN_FUNCTIONS:
+        return tools
+
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for tool in functions:
+        deferred = dict(tool)
+        deferred["defer_loading"] = True
+        grouped[_codex_tool_category(str(tool.get("name") or ""))].append(deferred)
+
+    namespaces: List[Dict[str, Any]] = []
+    for category in sorted(grouped):
+        category_tools = grouped[category]
+        for index in range(0, len(category_tools), _CODEX_NAMESPACE_MAX_FUNCTIONS):
+            chunk = category_tools[index:index + _CODEX_NAMESPACE_MAX_FUNCTIONS]
+            suffix = "" if len(category_tools) <= _CODEX_NAMESPACE_MAX_FUNCTIONS else f"_{index // _CODEX_NAMESPACE_MAX_FUNCTIONS + 1}"
+            namespaces.append({
+                "type": "namespace",
+                "name": f"hermes_{category}{suffix}",
+                "description": f"Hermes {category.replace('_', ' ')} tools.",
+                "tools": chunk,
+            })
+
+    builtins = [tool for tool in tools if tool.get("type") != "function"]
+    return [*builtins, *namespaces, {"type": "tool_search"}]
 
 
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
@@ -197,6 +283,18 @@ class ResponsesApiTransport(ProviderTransport):
                 ]
                 filtered.append({"type": "web_search"})
                 response_tools = filtered
+
+        # OpenAI's Codex Responses backend can search deferred tool schemas
+        # server-side on gpt-5.4+. This keeps large Hermes/MCP parameter schemas
+        # out of the model context until needed while preserving the full trusted
+        # inventory in the request. Smaller toolsets stay eager to avoid an
+        # unnecessary hosted-search step.
+        if (
+            is_codex_backend
+            and _codex_supports_native_tool_search(model)
+            and _codex_native_tool_search_enabled(params)
+        ):
+            response_tools = _codex_native_tool_search_tools(response_tools)
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -385,6 +483,12 @@ class ResponsesApiTransport(ProviderTransport):
             provider_data["codex_reasoning_items"] = msg.codex_reasoning_items
         if msg and hasattr(msg, "codex_message_items") and msg.codex_message_items:
             provider_data["codex_message_items"] = msg.codex_message_items
+        if msg and hasattr(msg, "codex_tool_search_items") and msg.codex_tool_search_items:
+            provider_data["codex_tool_search_items"] = msg.codex_tool_search_items
+        if msg and hasattr(msg, "codex_citations") and msg.codex_citations:
+            provider_data["codex_citations"] = msg.codex_citations
+        if msg and hasattr(msg, "provider_metrics") and msg.provider_metrics:
+            provider_data["provider_metrics"] = msg.provider_metrics
         if msg and hasattr(msg, "reasoning_details") and msg.reasoning_details:
             provider_data["reasoning_details"] = msg.reasoning_details
 

@@ -718,6 +718,9 @@ _ASSISTANT_REPLAY_FIELDS: tuple[str, ...] = (
     "reasoning_details",
     "codex_reasoning_items",
     "codex_message_items",
+    "codex_tool_search_items",
+    "codex_citations",
+    "provider_metrics",
     "finish_reason",
 )
 

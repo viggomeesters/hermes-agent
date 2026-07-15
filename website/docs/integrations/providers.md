@@ -82,6 +82,14 @@ Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscr
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
 
 If a token refresh fails with a terminal error (HTTP 4xx, `invalid_grant`, revoked grant, etc.), Hermes marks the refresh token as dead and stops replaying it so you don't see a flood of identical auth failures. The next request surfaces a typed re-auth message instead. Run `hermes auth add codex-oauth` (or `hermes model` → OpenAI Codex) to start a fresh device-code login; the quarantine clears on the next successful exchange.
+
+On Codex models that support it (GPT-5.4+), Hermes automatically uses provider-native Responses capabilities:
+
+- `web_search` runs server-side without a separate Brave/Tavily/Firecrawl search key;
+- large function inventories are grouped into deferred namespaces and loaded with native `tool_search` only when needed;
+- native URL citations, hosted-tool usage, per-call token usage, service tier, and prompt-cache retention are preserved in session metadata.
+
+Native tool search activates only when at least eight client functions are available. Set `HERMES_CODEX_NATIVE_TOOL_SEARCH=0` as an operational kill switch; smaller inventories and older models stay on eager function schemas automatically.
 :::
 
 :::warning

@@ -127,6 +127,24 @@ class TestBuildReplayEntry:
         entry = _build_replay_entry("assistant", "Done", msg)
         assert entry["codex_message_items"] == items
 
+    def test_assistant_preserves_codex_native_metadata(self):
+        tool_search_items = [{"type": "tool_search_call", "status": "completed"}]
+        citations = [{"type": "url_citation", "url": "https://example.com"}]
+        provider_metrics = {"tool_usage": {"web_search": {"num_requests": 1}}}
+        msg = {
+            "role": "assistant",
+            "content": "Done",
+            "codex_tool_search_items": tool_search_items,
+            "codex_citations": citations,
+            "provider_metrics": provider_metrics,
+        }
+
+        entry = _build_replay_entry("assistant", "Done", msg)
+
+        assert entry["codex_tool_search_items"] == tool_search_items
+        assert entry["codex_citations"] == citations
+        assert entry["provider_metrics"] == provider_metrics
+
     def test_assistant_preserves_finish_reason(self):
         """finish_reason was silently dropped before this fix.
 
@@ -235,6 +253,9 @@ class TestBuildReplayEntry:
             "reasoning_details",
             "codex_reasoning_items",
             "codex_message_items",
+            "codex_tool_search_items",
+            "codex_citations",
+            "provider_metrics",
             "finish_reason",
         )
 

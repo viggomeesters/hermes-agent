@@ -697,6 +697,29 @@ def test_consume_codex_stream_keeps_final_answer_phase_deltas(monkeypatch):
     assert response.output_text == "visible answer"
 
 
+def test_consume_codex_stream_preserves_native_provider_metrics():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    terminal_response = SimpleNamespace(
+        status="completed",
+        usage=SimpleNamespace(input_tokens=100, output_tokens=20),
+        tool_usage={"web_search": {"num_requests": 1}},
+        prompt_cache_retention="24h",
+        service_tier="default",
+    )
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.output_text.delta", delta="answer"),
+            SimpleNamespace(type="response.completed", response=terminal_response),
+        ]),
+        model="gpt-5.6-sol",
+    )
+
+    assert response.tool_usage == {"web_search": {"num_requests": 1}}
+    assert response.prompt_cache_retention == "24h"
+    assert response.service_tier == "default"
+
+
 def test_run_codex_stream_surfaces_failed_status_in_final_response(monkeypatch):
     """A ``response.failed`` terminal event is reflected on the returned object."""
     agent = _build_agent(monkeypatch)

@@ -1900,6 +1900,9 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    codex_tool_search_items=msg.get("codex_tool_search_items") if role == "assistant" else None,
+                    codex_citations=msg.get("codex_citations") if role == "assistant" else None,
+                    provider_metrics=msg.get("provider_metrics") if role == "assistant" else None,
                     timestamp=_row_timestamp,
                 )
                 msg[_DB_PERSISTED_MARKER] = True
@@ -2440,6 +2443,7 @@ class AIAgent:
                     "role": getattr(assistant_message, "role", "assistant"),
                     "content": getattr(assistant_message, "content", None),
                     "tool_calls": tool_calls,
+                    "provider_data": getattr(assistant_message, "provider_data", None),
                 },
                 "usage": self._usage_summary_for_api_request_hook(response),
             }

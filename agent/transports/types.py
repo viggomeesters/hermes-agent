@@ -143,6 +143,21 @@ class NormalizedResponse:
         pd = self.provider_data or {}
         return pd.get("codex_message_items")
 
+    @property
+    def codex_tool_search_items(self):
+        pd = self.provider_data or {}
+        return pd.get("codex_tool_search_items")
+
+    @property
+    def codex_citations(self):
+        pd = self.provider_data or {}
+        return pd.get("codex_citations")
+
+    @property
+    def provider_metrics(self):
+        pd = self.provider_data or {}
+        return pd.get("provider_metrics")
+
 
 # ---------------------------------------------------------------------------
 # Factory helpers

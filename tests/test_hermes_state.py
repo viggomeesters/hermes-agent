@@ -1232,6 +1232,35 @@ class TestMessageStorage:
         assert len(conv) == 1
         assert conv[0].get("codex_message_items") == items
 
+    def test_codex_native_metadata_persisted_and_restored(self, db):
+        db.create_session(session_id="s1", source="cli")
+        tool_search_items = [{
+            "type": "tool_search_call", "execution": "server",
+            "status": "completed", "arguments": {"paths": ["hermes_files"]},
+        }]
+        citations = [{
+            "type": "url_citation", "url": "https://example.com",
+            "title": "Example",
+        }]
+        provider_metrics = {
+            "prompt_cache_retention": "24h",
+            "tool_usage": {"web_search": {"num_requests": 1}},
+        }
+
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Done",
+            codex_tool_search_items=tool_search_items,
+            codex_citations=citations,
+            provider_metrics=provider_metrics,
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["codex_tool_search_items"] == tool_search_items
+        assert conv[0]["codex_citations"] == citations
+        assert conv[0]["provider_metrics"] == provider_metrics
+
     def test_reasoning_not_set_for_non_assistant(self, db):
         """reasoning is never leaked onto user or tool messages."""
         db.create_session(session_id="s1", source="telegram")

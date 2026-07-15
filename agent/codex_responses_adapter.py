@@ -252,13 +252,16 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
         name = fn.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
-        converted.append({
+        converted_tool = {
             "type": "function",
             "name": name,
             "description": fn.get("description", ""),
-            "strict": False,
+            "strict": bool(fn.get("strict", False)),
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
-        })
+        }
+        if fn.get("defer_loading") is True or item.get("defer_loading") is True:
+            converted_tool["defer_loading"] = True
+        converted.append(converted_tool)
     return converted or None
 
 
@@ -279,6 +282,7 @@ _RESPONSES_BUILTIN_TOOL_TYPES = {
     "image_generation",
     "computer_use_preview",
     "local_shell",
+    "tool_search",
 }
 
 
@@ -422,6 +426,27 @@ def _chat_messages_to_responses_input(
                             if item_id:
                                 seen_item_ids.add(item_id)
                             has_codex_reasoning = True
+
+                # Hosted tool-search results must be replayed before the
+                # function call they unlocked. Without these items every turn
+                # forgets which deferred schemas were loaded and the model must
+                # search the same namespace again.
+                codex_tool_search_items = msg.get("codex_tool_search_items")
+                if isinstance(codex_tool_search_items, list):
+                    for raw_item in codex_tool_search_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        item_type = raw_item.get("type")
+                        if item_type not in {"tool_search_call", "tool_search_output"}:
+                            continue
+                        replay_item = {
+                            key: value for key, value in raw_item.items()
+                            if key in {
+                                "type", "execution", "call_id", "status",
+                                "arguments", "tools",
+                            }
+                        }
+                        items.append(replay_item)
 
                 # Replay exact assistant message items (with id/phase) from
                 # previous turns so the API can maintain prefix-cache hits.
@@ -663,6 +688,47 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
             )
             continue
 
+        if item_type == "tool_search_call":
+            execution = item.get("execution", "server")
+            call_id = item.get("call_id")
+            arguments = item.get("arguments", {})
+            if execution not in {"server", "client"}:
+                raise ValueError(f"Codex Responses input[{idx}] tool_search_call has invalid execution.")
+            if execution == "client" and (not isinstance(call_id, str) or not call_id.strip()):
+                raise ValueError(f"Codex Responses input[{idx}] client tool_search_call is missing call_id.")
+            if not isinstance(arguments, dict):
+                raise ValueError(f"Codex Responses input[{idx}] tool_search_call arguments must be an object.")
+            normalized.append({
+                "type": "tool_search_call",
+                "execution": execution,
+                "call_id": call_id.strip() if isinstance(call_id, str) else None,
+                "status": str(item.get("status") or "completed"),
+                "arguments": arguments,
+            })
+            continue
+
+        if item_type == "tool_search_output":
+            execution = item.get("execution", "server")
+            call_id = item.get("call_id")
+            loaded_tools = item.get("tools")
+            if execution not in {"server", "client"}:
+                raise ValueError(f"Codex Responses input[{idx}] tool_search_output has invalid execution.")
+            if execution == "client" and (not isinstance(call_id, str) or not call_id.strip()):
+                raise ValueError(f"Codex Responses input[{idx}] client tool_search_output is missing call_id.")
+            if not isinstance(loaded_tools, list):
+                raise ValueError(f"Codex Responses input[{idx}] tool_search_output tools must be a list.")
+            normalized.append({
+                "type": "tool_search_output",
+                "execution": execution,
+                "call_id": call_id.strip() if isinstance(call_id, str) else None,
+                "status": str(item.get("status") or "completed"),
+                "tools": [
+                    _preflight_codex_tool_definition(tool, path=f"input[{idx}].tools[{tool_idx}]")
+                    for tool_idx, tool in enumerate(loaded_tools)
+                ],
+            })
+            continue
+
         if item_type == "reasoning":
             encrypted = item.get("encrypted_content")
             if isinstance(encrypted, str) and encrypted:
@@ -786,6 +852,54 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _preflight_codex_tool_definition(tool: Any, *, path: str) -> Dict[str, Any]:
+    """Validate one Responses tool definition, including hosted namespaces."""
+    if not isinstance(tool, dict):
+        raise ValueError(f"Codex Responses {path} must be an object.")
+    tool_type = tool.get("type")
+    if tool_type in _RESPONSES_BUILTIN_TOOL_TYPES:
+        return dict(tool)
+    if tool_type == "namespace":
+        name = tool.get("name")
+        nested = tool.get("tools")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"Codex Responses {path} namespace is missing a valid name.")
+        if not isinstance(nested, list) or not nested:
+            raise ValueError(f"Codex Responses {path} namespace must contain tools.")
+        description = tool.get("description", "")
+        normalized_nested = [
+            _preflight_codex_tool_definition(child, path=f"{path}.tools[{idx}]")
+            for idx, child in enumerate(nested)
+        ]
+        if any(child.get("type") != "function" for child in normalized_nested):
+            raise ValueError(f"Codex Responses {path} namespace may only contain functions.")
+        return {
+            "type": "namespace",
+            "name": name.strip(),
+            "description": str(description or ""),
+            "tools": normalized_nested,
+        }
+    if tool_type != "function":
+        raise ValueError(f"Codex Responses {path} has unsupported type {tool_type!r}.")
+
+    name = tool.get("name")
+    parameters = tool.get("parameters")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"Codex Responses {path} is missing a valid name.")
+    if not isinstance(parameters, dict):
+        raise ValueError(f"Codex Responses {path} is missing valid parameters.")
+    normalized = {
+        "type": "function",
+        "name": name.strip(),
+        "description": str(tool.get("description") or ""),
+        "strict": bool(tool.get("strict", False)),
+        "parameters": parameters,
+    }
+    if tool.get("defer_loading") is True:
+        normalized["defer_loading"] = True
+    return normalized
+
+
 def _preflight_codex_api_kwargs(
     api_kwargs: Any,
     *,
@@ -818,54 +932,10 @@ def _preflight_codex_api_kwargs(
     if tools is not None:
         if not isinstance(tools, list):
             raise ValueError("Codex Responses request 'tools' must be a list when provided.")
-        normalized_tools = []
-        for idx, tool in enumerate(tools):
-            if not isinstance(tool, dict):
-                raise ValueError(f"Codex Responses tools[{idx}] must be an object.")
-
-            tool_type = tool.get("type")
-
-            # Provider-executed built-in tools (xAI native web_search, code
-            # interpreter, etc.) are declared by ``type`` alone and carry no
-            # ``name``/``parameters`` schema — the provider owns the
-            # implementation.  Pass them through verbatim instead of forcing
-            # them through the function-tool validation below (which would
-            # otherwise reject them with "unsupported type").  See
-            # agent/transports/codex.py for where xAI's native web_search is
-            # injected.
-            if tool_type in _RESPONSES_BUILTIN_TOOL_TYPES:
-                normalized_tools.append(dict(tool))
-                continue
-
-            if tool_type != "function":
-                raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
-
-            name = tool.get("name")
-            parameters = tool.get("parameters")
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError(f"Codex Responses tools[{idx}] is missing a valid name.")
-            if not isinstance(parameters, dict):
-                raise ValueError(f"Codex Responses tools[{idx}] is missing valid parameters.")
-
-            description = tool.get("description", "")
-            if description is None:
-                description = ""
-            if not isinstance(description, str):
-                description = str(description)
-
-            strict = tool.get("strict", False)
-            if not isinstance(strict, bool):
-                strict = bool(strict)
-
-            normalized_tools.append(
-                {
-                    "type": "function",
-                    "name": name.strip(),
-                    "description": description,
-                    "strict": strict,
-                    "parameters": parameters,
-                }
-            )
+        normalized_tools = [
+            _preflight_codex_tool_definition(tool, path=f"tools[{idx}]")
+            for idx, tool in enumerate(tools)
+        ]
 
     store = api_kwargs.get("store", False)
     if store is not False:
@@ -1005,6 +1075,109 @@ def _extract_responses_message_text(item: Any) -> str:
     return "".join(chunks).strip()
 
 
+def _plain_responses_value(value: Any, *, depth: int = 0) -> Any:
+    """Convert SDK response objects to bounded JSON-compatible data."""
+    if depth > 12:
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _plain_responses_value(item, depth=depth + 1)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_plain_responses_value(item, depth=depth + 1) for item in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _plain_responses_value(value.model_dump(), depth=depth + 1)
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        return _plain_responses_value(vars(value), depth=depth + 1)
+    return str(value)
+
+
+def _extract_responses_citations(item: Any) -> List[Dict[str, Any]]:
+    """Extract normalized URL citations from a Responses message item."""
+    citations: List[Dict[str, Any]] = []
+    content = getattr(item, "content", None)
+    if not isinstance(content, list):
+        return citations
+    for part in content:
+        annotations = getattr(part, "annotations", None)
+        if not isinstance(annotations, list):
+            continue
+        for annotation in annotations:
+            plain = _plain_responses_value(annotation)
+            if not isinstance(plain, dict):
+                continue
+            nested = plain.get("url_citation")
+            source = nested if isinstance(nested, dict) else plain
+            if source.get("type") not in {None, "url_citation"} and plain.get("type") != "url_citation":
+                continue
+            url = source.get("url")
+            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                continue
+            citation: Dict[str, Any] = {"type": "url_citation", "url": url}
+            title = source.get("title")
+            citation["title"] = str(title).strip() if title else url
+            for key in ("start_index", "end_index"):
+                value = source.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    citation[key] = value
+            citations.append(citation)
+    return citations
+
+
+def _append_citation_sources(text: str, citations: List[Dict[str, Any]]) -> str:
+    """Render unique citation URLs that are not already visible in the answer."""
+    seen: set[str] = set()
+    lines: List[str] = []
+    for citation in citations:
+        url = str(citation.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        if url in text:
+            continue
+        title = " ".join(str(citation.get("title") or url).split())
+        title = title.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+        markdown_url = url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+        lines.append(f"- [{title}]({markdown_url})")
+        if len(lines) >= 10:
+            break
+    if not lines:
+        return text
+    return f"{text.rstrip()}\n\nSources:\n" + "\n".join(lines)
+
+
+def _extract_provider_metrics(response: Any, output: List[Any]) -> Dict[str, Any]:
+    """Capture non-token Responses telemetry that Hermes previously discarded."""
+    metrics: Dict[str, Any] = {}
+    for key in ("prompt_cache_retention", "service_tier"):
+        value = getattr(response, key, None)
+        if isinstance(value, str) and value.strip():
+            metrics[key] = value.strip()
+    tool_usage = _plain_responses_value(getattr(response, "tool_usage", None))
+    if isinstance(tool_usage, dict) and tool_usage:
+        metrics["tool_usage"] = tool_usage
+    usage = _plain_responses_value(getattr(response, "usage", None))
+    if isinstance(usage, dict) and usage:
+        metrics["usage"] = usage
+    counts: Dict[str, int] = {}
+    for item in output:
+        item_type = getattr(item, "type", None)
+        if not isinstance(item_type, str) or not item_type.endswith("_call"):
+            continue
+        name = item_type[:-5]
+        counts[name] = counts.get(name, 0) + 1
+    if counts:
+        metrics["server_tool_calls"] = counts
+    return metrics
+
+
 def _extract_responses_reasoning_text(item: Any) -> str:
     """Extract a compact reasoning text from a Responses reasoning item."""
     summary = getattr(item, "summary", None)
@@ -1114,6 +1287,8 @@ def _normalize_codex_response(
     reasoning_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
     message_items_raw: List[Dict[str, Any]] = []
+    tool_search_items_raw: List[Dict[str, Any]] = []
+    citations_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
     saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
@@ -1146,6 +1321,8 @@ def _normalize_codex_response(
         "computer_call",
         "local_shell_call",
         "mcp_call",
+        "tool_search_call",
+        "tool_search_output",
     }
 
     for item in output:
@@ -1175,6 +1352,7 @@ def _normalize_codex_response(
                 elif normalized_phase in {"final_answer", "final"}:
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
+            citations_raw.extend(_extract_responses_citations(item))
             if message_text:
                 # Responses ``commentary``/``analysis`` phase text is mid-turn
                 # preamble/progress narration, never the turn's final answer
@@ -1236,6 +1414,16 @@ def _normalize_codex_response(
                             raw_summary.append({"type": "summary_text", "text": text})
                     raw_item["summary"] = raw_summary
                 reasoning_items_raw.append(raw_item)
+        elif item_type in {"tool_search_call", "tool_search_output"}:
+            plain_item = _plain_responses_value(item)
+            if isinstance(plain_item, dict):
+                tool_search_items_raw.append({
+                    key: value for key, value in plain_item.items()
+                    if key in {
+                        "type", "execution", "call_id", "status",
+                        "arguments", "tools",
+                    }
+                })
         elif item_type == "function_call":
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue
@@ -1291,6 +1479,18 @@ def _normalize_codex_response(
         if isinstance(out_text, str):
             final_text = out_text.strip()
 
+    unique_citations: List[Dict[str, Any]] = []
+    seen_citation_urls: set[str] = set()
+    for citation in citations_raw:
+        url = str(citation.get("url") or "")
+        if not url or url in seen_citation_urls:
+            continue
+        seen_citation_urls.add(url)
+        unique_citations.append(citation)
+    if final_text and unique_citations:
+        final_text = _append_citation_sources(final_text, unique_citations)
+    provider_metrics = _extract_provider_metrics(response, output)
+
     # ── Tool-call leak recovery ──────────────────────────────────
     # gpt-5.x on the Codex Responses API sometimes degenerates and emits
     # what should be a structured `function_call` item as plain assistant
@@ -1330,6 +1530,9 @@ def _normalize_codex_response(
         reasoning_details=None,
         codex_reasoning_items=reasoning_items_raw or None,
         codex_message_items=message_items_raw or None,
+        codex_tool_search_items=tool_search_items_raw or None,
+        codex_citations=unique_citations or None,
+        provider_metrics=provider_metrics or None,
     )
 
     if tool_calls:

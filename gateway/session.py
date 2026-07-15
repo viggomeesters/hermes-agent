@@ -2273,6 +2273,9 @@ class SessionStore:
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                     codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
+                    codex_tool_search_items=message.get("codex_tool_search_items") if message.get("role") == "assistant" else None,
+                    codex_citations=message.get("codex_citations") if message.get("role") == "assistant" else None,
+                    provider_metrics=message.get("provider_metrics") if message.get("role") == "assistant" else None,
                     # Platform-side message id (yuanbao msg_id, telegram update_id, …).
                     # Accept either explicit ``platform_message_id`` or the legacy
                     # ``message_id`` key the JSONL transcript used.

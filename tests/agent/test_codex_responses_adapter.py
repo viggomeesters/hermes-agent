@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
@@ -164,6 +165,177 @@ def test_preflight_passes_native_web_search_tool_through():
     tools = out["tools"]
     assert {"type": "web_search"} in tools
     assert any(t.get("type") == "function" and t.get("name") == "read_file" for t in tools)
+
+
+def test_preflight_accepts_native_tool_search_namespaces():
+    kwargs = {
+        "model": "gpt-5.6-sol",
+        "instructions": "You are helpful.",
+        "input": [{"role": "user", "content": "read"}],
+        "store": False,
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "hermes_files",
+                "description": "File tools.",
+                "tools": [{
+                    "type": "function",
+                    "name": "read_file",
+                    "description": "Read a file.",
+                    "parameters": {"type": "object", "properties": {}},
+                    "strict": False,
+                    "defer_loading": True,
+                }],
+            },
+            {"type": "tool_search"},
+        ],
+    }
+
+    out = _preflight_codex_api_kwargs(kwargs, allow_stream=True)
+
+    assert out["tools"] == kwargs["tools"]
+
+
+def test_tool_search_items_round_trip_before_function_call():
+    messages = [{
+        "role": "assistant",
+        "content": "",
+        "codex_tool_search_items": [
+            {
+                "type": "tool_search_call",
+                "execution": "server",
+                "call_id": None,
+                "status": "completed",
+                "arguments": {"paths": ["hermes_files"]},
+            },
+            {
+                "type": "tool_search_output",
+                "execution": "server",
+                "call_id": None,
+                "status": "completed",
+                "tools": [{"type": "namespace", "name": "hermes_files", "description": "Files.", "tools": [{"type": "function", "name": "read_file", "description": "Read.", "parameters": {"type": "object", "properties": {}}, "strict": False, "defer_loading": True}]}],
+            },
+        ],
+        "tool_calls": [{
+            "id": "call_1",
+            "call_id": "call_1",
+            "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+        }],
+    }]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    types = [item.get("type") for item in items]
+    assert types == ["tool_search_call", "tool_search_output", "function_call"]
+    assert _preflight_codex_api_kwargs({
+        "model": "gpt-5.6-sol",
+        "instructions": "help",
+        "input": items,
+        "store": False,
+    })["input"] == items
+
+
+def test_normalize_preserves_citations_tool_search_and_provider_metrics():
+    citation = SimpleNamespace(
+        type="url_citation",
+        url="https://example.com/source",
+        title="Primary source",
+        start_index=0,
+        end_index=7,
+    )
+    response = SimpleNamespace(
+        status="completed",
+        prompt_cache_retention="24h",
+        service_tier="auto",
+        tool_usage=SimpleNamespace(web_search=SimpleNamespace(num_requests=2)),
+        output=[
+            SimpleNamespace(
+                type="tool_search_call", execution="server", call_id=None,
+                status="completed", arguments={"paths": ["hermes_web"]},
+            ),
+            SimpleNamespace(
+                type="tool_search_output", execution="server", call_id=None,
+                status="completed", tools=[{"type": "namespace", "name": "hermes_web", "description": "Web.", "tools": [{"type": "function", "name": "web_extract", "description": "Extract.", "parameters": {"type": "object", "properties": {}}, "strict": False, "defer_loading": True}]}],
+            ),
+            SimpleNamespace(type="web_search_call", status="completed"),
+            SimpleNamespace(
+                type="message", role="assistant", status="completed",
+                content=[SimpleNamespace(
+                    type="output_text", text="Result", annotations=[citation],
+                )],
+            ),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == (
+        "Result\n\nSources:\n- [Primary source](https://example.com/source)"
+    )
+    assert assistant_message.codex_citations == [{
+        "type": "url_citation",
+        "url": "https://example.com/source",
+        "title": "Primary source",
+        "start_index": 0,
+        "end_index": 7,
+    }]
+    assert [item["type"] for item in assistant_message.codex_tool_search_items] == [
+        "tool_search_call", "tool_search_output",
+    ]
+    assert assistant_message.provider_metrics == {
+        "prompt_cache_retention": "24h",
+        "service_tier": "auto",
+        "tool_usage": {"web_search": {"num_requests": 2}},
+        "server_tool_calls": {"tool_search": 1, "web_search": 1},
+    }
+
+
+def test_normalize_deduplicates_citation_urls_already_rendered():
+    response = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(
+                type="output_text",
+                text="See https://example.com/source",
+                annotations=[SimpleNamespace(
+                    type="url_citation", url="https://example.com/source",
+                    title="Source", start_index=4, end_index=30,
+                )],
+            )],
+        )],
+    )
+
+    assistant_message, _ = _normalize_codex_response(response)
+
+    assert assistant_message.content == "See https://example.com/source"
+    assert len(assistant_message.codex_citations) == 1
+
+
+def test_citation_source_rendering_escapes_untrusted_markdown():
+    response = SimpleNamespace(
+        status="completed",
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(
+                type="output_text",
+                text="Result",
+                annotations=[SimpleNamespace(
+                    type="url_citation",
+                    url="https://example.com/a_(b)",
+                    title="Bad\n[title]",
+                    start_index=0,
+                    end_index=6,
+                )],
+            )],
+        )],
+    )
+
+    assistant_message, _ = _normalize_codex_response(response)
+
+    assert "Bad \\[title\\]" in assistant_message.content
+    assert "https://example.com/a_%28b%29" in assistant_message.content
 
 
 def test_preflight_still_rejects_unknown_tool_type():

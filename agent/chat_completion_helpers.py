@@ -1101,6 +1101,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if codex_message_items:
         msg["codex_message_items"] = codex_message_items
 
+    codex_tool_search_items = getattr(assistant_message, "codex_tool_search_items", None)
+    if codex_tool_search_items:
+        msg["codex_tool_search_items"] = codex_tool_search_items
+
+    codex_citations = getattr(assistant_message, "codex_citations", None)
+    if codex_citations:
+        msg["codex_citations"] = codex_citations
+
+    provider_metrics = getattr(assistant_message, "provider_metrics", None)
+    if provider_metrics:
+        msg["provider_metrics"] = provider_metrics
+
     if assistant_tool_calls:
         tool_calls = []
         for tool_call in assistant_tool_calls:

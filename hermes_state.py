@@ -761,6 +761,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
+    codex_tool_search_items TEXT,
+    codex_citations TEXT,
+    provider_metrics TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
@@ -3453,6 +3456,9 @@ class SessionDB:
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
+        codex_tool_search_items: Any = None,
+        codex_citations: Any = None,
+        provider_metrics: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
         timestamp: Any = None,
@@ -3482,6 +3488,12 @@ class SessionDB:
             json.dumps(codex_message_items)
             if codex_message_items else None
         )
+        codex_tool_search_items_json = (
+            json.dumps(codex_tool_search_items)
+            if codex_tool_search_items else None
+        )
+        codex_citations_json = json.dumps(codex_citations) if codex_citations else None
+        provider_metrics_json = json.dumps(provider_metrics) if provider_metrics else None
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
@@ -3507,8 +3519,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, codex_tool_search_items, codex_citations,
+                   provider_metrics, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3524,6 +3537,9 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    codex_tool_search_items_json,
+                    codex_citations_json,
+                    provider_metrics_json,
                     platform_message_id,
                     1 if observed else 0,
                     1,
@@ -3579,6 +3595,11 @@ class SessionDB:
             codex_message_items = (
                 msg.get("codex_message_items") if role == "assistant" else None
             )
+            codex_tool_search_items = (
+                msg.get("codex_tool_search_items") if role == "assistant" else None
+            )
+            codex_citations = msg.get("codex_citations") if role == "assistant" else None
+            provider_metrics = msg.get("provider_metrics") if role == "assistant" else None
             reasoning_details_json = (
                 json.dumps(reasoning_details) if reasoning_details else None
             )
@@ -3588,6 +3609,11 @@ class SessionDB:
             codex_message_items_json = (
                 json.dumps(codex_message_items) if codex_message_items else None
             )
+            codex_tool_search_items_json = (
+                json.dumps(codex_tool_search_items) if codex_tool_search_items else None
+            )
+            codex_citations_json = json.dumps(codex_citations) if codex_citations else None
+            provider_metrics_json = json.dumps(provider_metrics) if provider_metrics else None
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
@@ -3599,8 +3625,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, codex_tool_search_items, codex_citations,
+                   provider_metrics, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3616,6 +3643,9 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    codex_tool_search_items_json,
+                    codex_citations_json,
+                    provider_metrics_json,
                     platform_msg_id,
                     1 if msg.get("observed") else 0,
                     1,
@@ -4105,7 +4135,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
+                "codex_reasoning_items, codex_message_items, codex_tool_search_items, "
+                "codex_citations, provider_metrics, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -4168,12 +4199,20 @@ class SessionDB:
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
                         msg["codex_reasoning_items"] = None
-                if row["codex_message_items"]:
-                    try:
-                        msg["codex_message_items"] = json.loads(row["codex_message_items"])
-                    except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize codex_message_items, falling back to None")
-                        msg["codex_message_items"] = None
+                for field in (
+                    "codex_message_items",
+                    "codex_tool_search_items",
+                    "codex_citations",
+                    "provider_metrics",
+                ):
+                    if row[field]:
+                        try:
+                            msg[field] = json.loads(row[field])
+                        except (json.JSONDecodeError, TypeError):
+                            logger.warning(
+                                "Failed to deserialize %s, falling back to None", field
+                            )
+                            msg[field] = None
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)

@@ -3830,6 +3830,9 @@ class GatewaySlashCommandsMixin:
                     reasoning_details=msg.get("reasoning_details"),
                     codex_reasoning_items=msg.get("codex_reasoning_items"),
                     codex_message_items=msg.get("codex_message_items"),
+                    codex_tool_search_items=msg.get("codex_tool_search_items"),
+                    codex_citations=msg.get("codex_citations"),
+                    provider_metrics=msg.get("provider_metrics"),
                 )
             except Exception:
                 pass  # Best-effort copy
