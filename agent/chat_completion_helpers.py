@@ -752,6 +752,16 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                     getattr(agent, "log_prefix", ""), exc,
                 )
 
+        native_tool_search = True
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config() or {}
+            _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
+            if isinstance(_agent_cfg, dict) and "codex_native_tool_search" in _agent_cfg:
+                native_tool_search = _agent_cfg.get("codex_native_tool_search") is not False
+        except Exception:
+            pass
+
         return _ct.build_kwargs(
             model=agent.model,
             messages=_msgs_for_codex,
@@ -764,6 +774,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
+            native_tool_search=native_tool_search,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
             replay_encrypted_reasoning=bool(
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
@@ -1105,6 +1116,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if codex_tool_search_items:
         msg["codex_tool_search_items"] = codex_tool_search_items
 
+    codex_output_items = getattr(assistant_message, "codex_output_items", None)
+    if codex_output_items:
+        msg["codex_output_items"] = codex_output_items
+
     codex_citations = getattr(assistant_message, "codex_citations", None)
     if codex_citations:
         msg["codex_citations"] = codex_citations
@@ -1151,6 +1166,9 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     "arguments": tool_call.function.arguments
                 },
             }
+            namespace = getattr(tool_call, "namespace", None)
+            if isinstance(namespace, str) and namespace.strip():
+                tc_dict["namespace"] = namespace.strip()
             # Tool-call arguments are intentionally NOT redacted here. This
             # dict enters the in-memory conversation history that is replayed
             # to the model on every subsequent turn AND persisted to state.db,

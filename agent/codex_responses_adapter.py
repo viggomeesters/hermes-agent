@@ -307,6 +307,71 @@ def _normalize_responses_message_status(value: Any, *, default: str = "completed
     return default
 
 
+def _replay_ordered_codex_output_items(
+    raw_items: Any,
+    *,
+    replay_encrypted_reasoning: bool,
+    current_issuer_kind: Optional[str],
+    seen_item_ids: set,
+) -> Optional[List[Dict[str, Any]]]:
+    """Return canonical Codex output in provider wire order.
+
+    ``None`` means no canonical representation was stored and callers should
+    use the legacy split-field reconstruction. An empty list is authoritative:
+    canonical items existed, but all were intentionally filtered (for example
+    foreign encrypted reasoning after a provider switch).
+    """
+    if not isinstance(raw_items, list):
+        return None
+
+    replayed: List[Dict[str, Any]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        item_type = raw_item.get("type")
+        if item_type == "reasoning":
+            if not replay_encrypted_reasoning or not raw_item.get("encrypted_content"):
+                continue
+            item_issuer = raw_item.get("_issuer_kind")
+            if (
+                current_issuer_kind is not None
+                and item_issuer is not None
+                and item_issuer != current_issuer_kind
+            ):
+                global _CROSS_ISSUER_WARN_EMITTED
+                if not _CROSS_ISSUER_WARN_EMITTED:
+                    logger.warning(
+                        "Dropping reasoning item minted by %s while calling %s — "
+                        "encrypted_content is sealed to its issuer.",
+                        item_issuer,
+                        current_issuer_kind,
+                    )
+                    _CROSS_ISSUER_WARN_EMITTED = True
+                continue
+            item_id = raw_item.get("id")
+            if item_id and item_id in seen_item_ids:
+                continue
+            candidate = {
+                key: value for key, value in raw_item.items()
+                if key not in {"id", "_issuer_kind"}
+            }
+            if item_id:
+                seen_item_ids.add(item_id)
+        elif item_type in {
+            "message", "tool_search_call", "tool_search_output", "function_call"
+        }:
+            candidate = dict(raw_item)
+        else:
+            continue
+
+        try:
+            replayed.extend(_preflight_codex_input_items([candidate]))
+        except ValueError as exc:
+            logger.warning("Skipping invalid canonical Codex replay item %s: %s", item_type, exc)
+
+    return replayed
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
@@ -371,6 +436,18 @@ def _chat_messages_to_responses_input(
                 content_text = str(content) if content is not None else ""
 
             if role == "assistant":
+                ordered_output = _replay_ordered_codex_output_items(
+                    msg.get("codex_output_items"),
+                    replay_encrypted_reasoning=replay_encrypted_reasoning,
+                    current_issuer_kind=current_issuer_kind,
+                    seen_item_ids=seen_item_ids,
+                )
+                if ordered_output is not None:
+                    items.extend(ordered_output)
+                    continue
+
+                # Legacy fallback for sessions persisted before canonical,
+                # order-preserving Codex output items were introduced.
                 # Replay encrypted reasoning items from previous turns
                 # so the API can maintain coherent reasoning chains.
                 # This applies to every Responses transport including
@@ -545,12 +622,18 @@ def _chat_messages_to_responses_input(
                             arguments = str(arguments)
                         arguments = arguments.strip() or "{}"
 
-                        items.append({
+                        replay_function_call = {
                             "type": "function_call",
                             "call_id": call_id,
                             "name": fn_name,
                             "arguments": arguments,
-                        })
+                        }
+                        namespace = tc.get("namespace")
+                        if not isinstance(namespace, str) or not namespace.strip():
+                            namespace = (tc.get("provider_data") or {}).get("namespace")
+                        if isinstance(namespace, str) and namespace.strip():
+                            replay_function_call["namespace"] = namespace.strip()
+                        items.append(replay_function_call)
                 continue
 
             # Non-assistant (user) role: emit multimodal parts when present,
@@ -627,14 +710,16 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 arguments = str(arguments)
             arguments = arguments.strip() or "{}"
 
-            normalized.append(
-                {
-                    "type": "function_call",
-                    "call_id": call_id.strip(),
-                    "name": name.strip(),
-                    "arguments": arguments,
-                }
-            )
+            normalized_call = {
+                "type": "function_call",
+                "call_id": call_id.strip(),
+                "name": name.strip(),
+                "arguments": arguments,
+            }
+            namespace = item.get("namespace")
+            if isinstance(namespace, str) and namespace.strip():
+                normalized_call["namespace"] = namespace.strip()
+            normalized.append(normalized_call)
             continue
 
         if item_type == "function_call_output":
@@ -773,7 +858,29 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                     text = ""
                 if not isinstance(text, str):
                     text = str(text)
-                normalized_content.append({"type": "output_text", "text": text})
+                normalized_part = {"type": "output_text", "text": text}
+                annotations = part.get("annotations")
+                if isinstance(annotations, list):
+                    normalized_annotations = []
+                    for annotation in annotations:
+                        if not isinstance(annotation, dict):
+                            continue
+                        if annotation.get("type") != "url_citation":
+                            continue
+                        url = annotation.get("url")
+                        if not isinstance(url, str) or not url.strip():
+                            continue
+                        normalized_annotation = {
+                            "type": "url_citation",
+                            "url": url.strip(),
+                        }
+                        for key in ("title", "start_index", "end_index"):
+                            if key in annotation:
+                                normalized_annotation[key] = annotation[key]
+                        normalized_annotations.append(normalized_annotation)
+                    if normalized_annotations:
+                        normalized_part["annotations"] = normalized_annotations
+                normalized_content.append(normalized_part)
             if not normalized_content:
                 raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
             normalized_item: Dict[str, Any] = {
@@ -1167,9 +1274,14 @@ def _extract_provider_metrics(response: Any, output: List[Any]) -> Dict[str, Any
     if isinstance(usage, dict) and usage:
         metrics["usage"] = usage
     counts: Dict[str, int] = {}
+    hosted_call_types = {
+        "web_search_call", "file_search_call", "code_interpreter_call",
+        "image_generation_call", "computer_call", "local_shell_call",
+        "mcp_call", "tool_search_call",
+    }
     for item in output:
         item_type = getattr(item, "type", None)
-        if not isinstance(item_type, str) or not item_type.endswith("_call"):
+        if item_type not in hosted_call_types:
             continue
         name = item_type[:-5]
         counts[name] = counts.get(name, 0) + 1
@@ -1288,6 +1400,7 @@ def _normalize_codex_response(
     reasoning_items_raw: List[Dict[str, Any]] = []
     message_items_raw: List[Dict[str, Any]] = []
     tool_search_items_raw: List[Dict[str, Any]] = []
+    output_items_raw: List[Dict[str, Any]] = []
     citations_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
@@ -1352,7 +1465,8 @@ def _normalize_codex_response(
                 elif normalized_phase in {"final_answer", "final"}:
                     saw_final_answer_phase = True
             message_text = _extract_responses_message_text(item)
-            citations_raw.extend(_extract_responses_citations(item))
+            item_citations = _extract_responses_citations(item)
+            citations_raw.extend(item_citations)
             if message_text:
                 # Responses ``commentary``/``analysis`` phase text is mid-turn
                 # preamble/progress narration, never the turn's final answer
@@ -1366,11 +1480,17 @@ def _normalize_codex_response(
                     reasoning_parts.append(message_text)
                 else:
                     content_parts.append(message_text)
+                raw_text_part: Dict[str, Any] = {
+                    "type": "output_text",
+                    "text": message_text,
+                }
+                if item_citations:
+                    raw_text_part["annotations"] = item_citations
                 raw_message_item: Dict[str, Any] = {
                     "type": "message",
                     "role": "assistant",
                     "status": _normalize_responses_message_status(item_status),
-                    "content": [{"type": "output_text", "text": message_text}],
+                    "content": [raw_text_part],
                 }
                 item_id = getattr(item, "id", None)
                 if isinstance(item_id, str) and item_id:
@@ -1378,6 +1498,7 @@ def _normalize_codex_response(
                 if normalized_phase:
                     raw_message_item["phase"] = normalized_phase
                 message_items_raw.append(raw_message_item)
+                output_items_raw.append(dict(raw_message_item))
         elif item_type == "reasoning":
             saw_reasoning_item = True
             reasoning_text = _extract_responses_reasoning_text(item)
@@ -1414,16 +1535,19 @@ def _normalize_codex_response(
                             raw_summary.append({"type": "summary_text", "text": text})
                     raw_item["summary"] = raw_summary
                 reasoning_items_raw.append(raw_item)
+                output_items_raw.append(dict(raw_item))
         elif item_type in {"tool_search_call", "tool_search_output"}:
             plain_item = _plain_responses_value(item)
             if isinstance(plain_item, dict):
-                tool_search_items_raw.append({
+                sanitized_tool_search_item = {
                     key: value for key, value in plain_item.items()
                     if key in {
                         "type", "execution", "call_id", "status",
                         "arguments", "tools",
                     }
-                })
+                }
+                tool_search_items_raw.append(sanitized_tool_search_item)
+                output_items_raw.append(dict(sanitized_tool_search_item))
         elif item_type == "function_call":
             if item_status in {"queued", "in_progress", "incomplete"}:
                 continue
@@ -1440,10 +1564,25 @@ def _normalize_codex_response(
             call_id = call_id.strip()
             response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
             response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
+            namespace = getattr(item, "namespace", None)
+            if not isinstance(namespace, str) or not namespace.strip():
+                namespace = None
+            else:
+                namespace = namespace.strip()
+            raw_function_call = {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": fn_name,
+                "arguments": arguments,
+            }
+            if namespace:
+                raw_function_call["namespace"] = namespace
+            output_items_raw.append(raw_function_call)
             tool_calls.append(SimpleNamespace(
                 id=call_id,
                 call_id=call_id,
                 response_item_id=response_item_id,
+                namespace=namespace,
                 type="function",
                 function=SimpleNamespace(name=fn_name, arguments=arguments),
             ))
@@ -1461,6 +1600,12 @@ def _normalize_codex_response(
             call_id = call_id.strip()
             response_item_id = raw_item_id if isinstance(raw_item_id, str) else None
             response_item_id = _derive_responses_function_call_id(call_id, response_item_id)
+            output_items_raw.append({
+                "type": "function_call",
+                "call_id": call_id,
+                "name": fn_name,
+                "arguments": arguments,
+            })
             tool_calls.append(SimpleNamespace(
                 id=call_id,
                 call_id=call_id,
@@ -1531,6 +1676,7 @@ def _normalize_codex_response(
         codex_reasoning_items=reasoning_items_raw or None,
         codex_message_items=message_items_raw or None,
         codex_tool_search_items=tool_search_items_raw or None,
+        codex_output_items=output_items_raw or None,
         codex_citations=unique_citations or None,
         provider_metrics=provider_metrics or None,
     )

@@ -131,10 +131,15 @@ class TestBuildReplayEntry:
         tool_search_items = [{"type": "tool_search_call", "status": "completed"}]
         citations = [{"type": "url_citation", "url": "https://example.com"}]
         provider_metrics = {"tool_usage": {"web_search": {"num_requests": 1}}}
+        output_items = [{
+            "type": "function_call", "call_id": "call_1", "name": "read_file",
+            "arguments": "{}", "namespace": "hermes_files",
+        }]
         msg = {
             "role": "assistant",
             "content": "Done",
             "codex_tool_search_items": tool_search_items,
+            "codex_output_items": output_items,
             "codex_citations": citations,
             "provider_metrics": provider_metrics,
         }
@@ -142,6 +147,7 @@ class TestBuildReplayEntry:
         entry = _build_replay_entry("assistant", "Done", msg)
 
         assert entry["codex_tool_search_items"] == tool_search_items
+        assert entry["codex_output_items"] == output_items
         assert entry["codex_citations"] == citations
         assert entry["provider_metrics"] == provider_metrics
 
@@ -254,6 +260,7 @@ class TestBuildReplayEntry:
             "codex_reasoning_items",
             "codex_message_items",
             "codex_tool_search_items",
+            "codex_output_items",
             "codex_citations",
             "provider_metrics",
             "finish_reason",

@@ -762,6 +762,7 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     codex_tool_search_items TEXT,
+    codex_output_items TEXT,
     codex_citations TEXT,
     provider_metrics TEXT,
     platform_message_id TEXT,
@@ -3457,6 +3458,7 @@ class SessionDB:
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
         codex_tool_search_items: Any = None,
+        codex_output_items: Any = None,
         codex_citations: Any = None,
         provider_metrics: Any = None,
         platform_message_id: str = None,
@@ -3492,6 +3494,9 @@ class SessionDB:
             json.dumps(codex_tool_search_items)
             if codex_tool_search_items else None
         )
+        codex_output_items_json = (
+            json.dumps(codex_output_items) if codex_output_items else None
+        )
         codex_citations_json = json.dumps(codex_citations) if codex_citations else None
         provider_metrics_json = json.dumps(provider_metrics) if provider_metrics else None
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
@@ -3519,9 +3524,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, codex_tool_search_items, codex_citations,
-                   provider_metrics, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, codex_tool_search_items, codex_output_items,
+                   codex_citations, provider_metrics, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3538,6 +3543,7 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     codex_tool_search_items_json,
+                    codex_output_items_json,
                     codex_citations_json,
                     provider_metrics_json,
                     platform_message_id,
@@ -3598,6 +3604,9 @@ class SessionDB:
             codex_tool_search_items = (
                 msg.get("codex_tool_search_items") if role == "assistant" else None
             )
+            codex_output_items = (
+                msg.get("codex_output_items") if role == "assistant" else None
+            )
             codex_citations = msg.get("codex_citations") if role == "assistant" else None
             provider_metrics = msg.get("provider_metrics") if role == "assistant" else None
             reasoning_details_json = (
@@ -3612,6 +3621,9 @@ class SessionDB:
             codex_tool_search_items_json = (
                 json.dumps(codex_tool_search_items) if codex_tool_search_items else None
             )
+            codex_output_items_json = (
+                json.dumps(codex_output_items) if codex_output_items else None
+            )
             codex_citations_json = json.dumps(codex_citations) if codex_citations else None
             provider_metrics_json = json.dumps(provider_metrics) if provider_metrics else None
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
@@ -3625,9 +3637,9 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, codex_tool_search_items, codex_citations,
-                   provider_metrics, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, codex_tool_search_items, codex_output_items,
+                   codex_citations, provider_metrics, platform_message_id, observed, active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3644,6 +3656,7 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     codex_tool_search_items_json,
+                    codex_output_items_json,
                     codex_citations_json,
                     provider_metrics_json,
                     platform_msg_id,
@@ -4136,7 +4149,7 @@ class SessionDB:
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, codex_tool_search_items, "
-                "codex_citations, provider_metrics, platform_message_id, observed, timestamp "
+                "codex_output_items, codex_citations, provider_metrics, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
                 # append_message stamps rows with time.time(), which is not
@@ -4202,6 +4215,7 @@ class SessionDB:
                 for field in (
                     "codex_message_items",
                     "codex_tool_search_items",
+                    "codex_output_items",
                     "codex_citations",
                     "provider_metrics",
                 ):

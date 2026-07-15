@@ -1901,6 +1901,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     codex_tool_search_items=msg.get("codex_tool_search_items") if role == "assistant" else None,
+                    codex_output_items=msg.get("codex_output_items") if role == "assistant" else None,
                     codex_citations=msg.get("codex_citations") if role == "assistant" else None,
                     provider_metrics=msg.get("provider_metrics") if role == "assistant" else None,
                     timestamp=_row_timestamp,
@@ -2435,6 +2436,14 @@ class AIAgent:
         # the sanitiser MUST preserve that capability or hook subscribers
         # will receive opaque ``str(obj)`` blobs here.
         tool_calls = getattr(assistant_message, "tool_calls", None) or []
+        raw_provider_data = getattr(assistant_message, "provider_data", None)
+        observable_provider_data = None
+        if isinstance(raw_provider_data, dict):
+            observable_provider_data = {
+                key: raw_provider_data[key]
+                for key in ("provider_metrics", "codex_citations")
+                if raw_provider_data.get(key)
+            } or None
         return self._sanitize_hook_payload(
             {
                 "model": getattr(response, "model", None),
@@ -2443,7 +2452,7 @@ class AIAgent:
                     "role": getattr(assistant_message, "role", "assistant"),
                     "content": getattr(assistant_message, "content", None),
                     "tool_calls": tool_calls,
-                    "provider_data": getattr(assistant_message, "provider_data", None),
+                    "provider_data": observable_provider_data,
                 },
                 "usage": self._usage_summary_for_api_request_hook(response),
             }

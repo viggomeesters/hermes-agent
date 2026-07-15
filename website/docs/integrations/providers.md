@@ -89,7 +89,13 @@ On Codex models that support it (GPT-5.4+), Hermes automatically uses provider-n
 - large function inventories are grouped into deferred namespaces and loaded with native `tool_search` only when needed;
 - native URL citations, hosted-tool usage, per-call token usage, service tier, and prompt-cache retention are preserved in session metadata.
 
-Native tool search activates only when at least eight client functions are available. Set `HERMES_CODEX_NATIVE_TOOL_SEARCH=0` as an operational kill switch; smaller inventories and older models stay on eager function schemas automatically.
+Native tool search activates only when at least eight client functions are available. It can be disabled through normal configuration:
+
+```bash
+hermes config set agent.codex_native_tool_search false
+```
+
+Smaller inventories and older models stay on eager function schemas automatically.
 :::
 
 :::warning

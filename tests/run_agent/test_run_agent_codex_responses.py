@@ -367,6 +367,28 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "extra_body" not in kwargs
 
 
+def test_build_api_kwargs_codex_reads_native_tool_search_from_config(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": f"tool_{index}",
+            "description": "Test.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    } for index in range(8)]
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"agent": {"codex_native_tool_search": False}},
+    )
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert all(tool["type"] == "function" for tool in kwargs["tools"])
+    assert {"type": "tool_search"} not in kwargs["tools"]
+
+
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     """'minimal' reasoning effort is clamped to 'low' on the Responses API.
 

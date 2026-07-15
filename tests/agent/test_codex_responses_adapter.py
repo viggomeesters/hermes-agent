@@ -235,6 +235,84 @@ def test_tool_search_items_round_trip_before_function_call():
     })["input"] == items
 
 
+def test_canonical_codex_output_preserves_wire_order_namespace_and_citations():
+    ordered = [
+        {
+            "type": "reasoning",
+            "encrypted_content": "enc",
+            "summary": [],
+            "_issuer_kind": "codex",
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{
+                "type": "output_text",
+                "text": "Result",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url": "https://example.com/source",
+                    "title": "Source",
+                    "start_index": 0,
+                    "end_index": 6,
+                }],
+            }],
+        },
+        {
+            "type": "tool_search_call",
+            "execution": "server",
+            "call_id": None,
+            "status": "completed",
+            "arguments": {"paths": ["hermes_files"]},
+        },
+        {
+            "type": "tool_search_output",
+            "execution": "server",
+            "call_id": None,
+            "status": "completed",
+            "tools": [{
+                "type": "namespace",
+                "name": "hermes_files",
+                "description": "Files.",
+                "tools": [{
+                    "type": "function",
+                    "name": "read_file",
+                    "description": "Read.",
+                    "parameters": {"type": "object", "properties": {}},
+                    "strict": False,
+                    "defer_loading": True,
+                }],
+            }],
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "read_file",
+            "arguments": '{"path":"README.md"}',
+            "namespace": "hermes_files",
+        },
+    ]
+
+    replayed = _chat_messages_to_responses_input([{
+        "role": "assistant",
+        "content": "Result\n\nSources:\n- [Source](https://example.com/source)",
+        "codex_output_items": ordered,
+        "tool_calls": [{
+            "id": "call_1",
+            "function": {"name": "read_file", "arguments": '{}'},
+        }],
+    }], current_issuer_kind="codex")
+
+    assert [item["type"] for item in replayed] == [
+        "reasoning", "message", "tool_search_call", "tool_search_output", "function_call",
+    ]
+    assert replayed[-1]["namespace"] == "hermes_files"
+    assert replayed[1]["content"][0]["annotations"][0]["url"] == (
+        "https://example.com/source"
+    )
+
+
 def test_normalize_preserves_citations_tool_search_and_provider_metrics():
     citation = SimpleNamespace(
         type="url_citation",
@@ -264,12 +342,17 @@ def test_normalize_preserves_citations_tool_search_and_provider_metrics():
                     type="output_text", text="Result", annotations=[citation],
                 )],
             ),
+            SimpleNamespace(
+                type="function_call", status="completed", call_id="call_1",
+                id="fc_1", name="web_extract", arguments='{"url":"https://example.com"}',
+                namespace="hermes_web",
+            ),
         ],
     )
 
     assistant_message, finish_reason = _normalize_codex_response(response)
 
-    assert finish_reason == "stop"
+    assert finish_reason == "tool_calls"
     assert assistant_message.content == (
         "Result\n\nSources:\n- [Primary source](https://example.com/source)"
     )
@@ -282,6 +365,14 @@ def test_normalize_preserves_citations_tool_search_and_provider_metrics():
     }]
     assert [item["type"] for item in assistant_message.codex_tool_search_items] == [
         "tool_search_call", "tool_search_output",
+    ]
+    assert [item["type"] for item in assistant_message.codex_output_items] == [
+        "tool_search_call", "tool_search_output", "message", "function_call",
+    ]
+    assert assistant_message.codex_output_items[-1]["namespace"] == "hermes_web"
+    assert assistant_message.tool_calls[0].namespace == "hermes_web"
+    assert assistant_message.codex_output_items[2]["content"][0]["annotations"] == [
+        assistant_message.codex_citations[0]
     ]
     assert assistant_message.provider_metrics == {
         "prompt_cache_retention": "24h",

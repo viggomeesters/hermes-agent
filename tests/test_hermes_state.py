@@ -1242,6 +1242,13 @@ class TestMessageStorage:
             "type": "url_citation", "url": "https://example.com",
             "title": "Example",
         }]
+        output_items = [
+            {"type": "message", "role": "assistant", "status": "completed", "content": [
+                {"type": "output_text", "text": "Done", "annotations": citations}
+            ]},
+            {"type": "function_call", "call_id": "call_1", "name": "read_file",
+             "arguments": "{}", "namespace": "hermes_files"},
+        ]
         provider_metrics = {
             "prompt_cache_retention": "24h",
             "tool_usage": {"web_search": {"num_requests": 1}},
@@ -1252,12 +1259,14 @@ class TestMessageStorage:
             role="assistant",
             content="Done",
             codex_tool_search_items=tool_search_items,
+            codex_output_items=output_items,
             codex_citations=citations,
             provider_metrics=provider_metrics,
         )
 
         conv = db.get_messages_as_conversation("s1")
         assert conv[0]["codex_tool_search_items"] == tool_search_items
+        assert conv[0]["codex_output_items"] == output_items
         assert conv[0]["codex_citations"] == citations
         assert conv[0]["provider_metrics"] == provider_metrics
 

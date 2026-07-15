@@ -7,7 +7,6 @@ streaming, or the _run_codex_stream() call path.
 
 import hashlib
 import json
-import os
 import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
@@ -29,11 +28,8 @@ def _codex_supports_native_tool_search(model: str) -> bool:
 
 
 def _codex_native_tool_search_enabled(params: Dict[str, Any]) -> bool:
-    """Allow a per-request override and an operational environment kill switch."""
-    if params.get("native_tool_search", True) is False:
-        return False
-    env_value = os.getenv("HERMES_CODEX_NATIVE_TOOL_SEARCH", "").strip().lower()
-    return env_value not in {"0", "false", "no", "off", "disabled"}
+    """Honor the config-derived per-request feature flag."""
+    return params.get("native_tool_search", True) is not False
 
 
 def _codex_tool_category(name: str) -> str:
@@ -470,6 +466,8 @@ class ResponsesApiTransport(ProviderTransport):
                     provider_data["call_id"] = tc.call_id
                 if hasattr(tc, "response_item_id") and tc.response_item_id:
                     provider_data["response_item_id"] = tc.response_item_id
+                if hasattr(tc, "namespace") and tc.namespace:
+                    provider_data["namespace"] = tc.namespace
                 tool_calls.append(ToolCall(
                     id=tc.id if hasattr(tc, "id") else (tc.function.name if hasattr(tc, "function") else None),
                     name=tc.function.name if hasattr(tc, "function") else getattr(tc, "name", ""),
@@ -485,6 +483,8 @@ class ResponsesApiTransport(ProviderTransport):
             provider_data["codex_message_items"] = msg.codex_message_items
         if msg and hasattr(msg, "codex_tool_search_items") and msg.codex_tool_search_items:
             provider_data["codex_tool_search_items"] = msg.codex_tool_search_items
+        if msg and hasattr(msg, "codex_output_items") and msg.codex_output_items:
+            provider_data["codex_output_items"] = msg.codex_output_items
         if msg and hasattr(msg, "codex_citations") and msg.codex_citations:
             provider_data["codex_citations"] = msg.codex_citations
         if msg and hasattr(msg, "provider_metrics") and msg.provider_metrics:

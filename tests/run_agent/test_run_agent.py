@@ -5349,6 +5349,8 @@ class TestHookPayloadSanitizesSimpleNamespace:
             provider_data={
                 "provider_metrics": {"prompt_cache_retention": "24h"},
                 "codex_citations": [{"url": "https://example.com"}],
+                "codex_reasoning_items": [{"encrypted_content": "secret-blob"}],
+                "codex_output_items": [{"type": "tool_search_output", "tools": []}],
             },
         )
         response = SimpleNamespace(model="anthropic.claude-3", usage=None)
@@ -5368,6 +5370,8 @@ class TestHookPayloadSanitizesSimpleNamespace:
         assert payload["assistant_message"]["provider_data"]["codex_citations"] == [
             {"url": "https://example.com"}
         ]
+        assert "codex_reasoning_items" not in payload["assistant_message"]["provider_data"]
+        assert "codex_output_items" not in payload["assistant_message"]["provider_data"]
 
 
 class TestRetryExhaustion:

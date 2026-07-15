@@ -448,8 +448,7 @@ class TestCodexBuildKwargs:
         assert all(tool["defer_loading"] is True for ns in namespaces for tool in ns["tools"])
         assert not any(tool.get("type") == "function" for tool in tools)
 
-    def test_openai_codex_native_tool_search_has_kill_switch(self, transport, monkeypatch):
-        monkeypatch.setenv("HERMES_CODEX_NATIVE_TOOL_SEARCH", "0")
+    def test_openai_codex_native_tool_search_has_config_kill_switch(self, transport):
         tools = [{
             "type": "function",
             "function": {
@@ -464,6 +463,7 @@ class TestCodexBuildKwargs:
             messages=[{"role": "user", "content": "test"}],
             tools=tools,
             is_codex_backend=True,
+            native_tool_search=False,
         )
 
         assert all(tool["type"] == "function" for tool in kw["tools"])
