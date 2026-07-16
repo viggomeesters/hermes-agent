@@ -20,11 +20,32 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+# Pytest imports conftest before collecting test modules, but autouse fixtures
+# do not run until after collection.  Sandbox HERMES_HOME immediately so any
+# plugin or test module that imports Hermes during collection cannot cache the
+# live gateway's ~/.hermes paths.  The per-test fixture below replaces this
+# bootstrap directory with a fresh tmp_path for each test.
+_PYTEST_BOOTSTRAP_HERMES_HOME = Path(
+    tempfile.mkdtemp(prefix="hermes-pytest-bootstrap-")
+).resolve()
+for _bootstrap_subdir in ("sessions", "cron", "memories", "skills"):
+    (_PYTEST_BOOTSTRAP_HERMES_HOME / _bootstrap_subdir).mkdir()
+os.environ["HERMES_HOME"] = str(_PYTEST_BOOTSTRAP_HERMES_HOME)
+atexit.register(
+    shutil.rmtree,
+    _PYTEST_BOOTSTRAP_HERMES_HOME,
+    ignore_errors=True,
+)
 
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
