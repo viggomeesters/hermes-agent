@@ -432,6 +432,154 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     })
 
 
+def _is_native_codex_responses_compaction(agent: Any) -> bool:
+    """Return whether this session should use the provider's compaction endpoint."""
+    mode = str(getattr(agent, "codex_responses_compaction", "native") or "native").lower()
+    if mode != "native" or getattr(agent, "api_mode", None) != "codex_responses":
+        return False
+    # A configured plugin owns context policy and compaction semantics. Native
+    # Codex compaction must not silently bypass LCM or another external engine.
+    if str(getattr(agent, "context_engine_name", "compressor")) != "compressor":
+        return False
+    provider = str(getattr(agent, "provider", "") or "").lower()
+    base_url = str(getattr(agent, "base_url", "") or "").lower()
+    return provider == "openai-codex" or "chatgpt.com/backend-api/codex" in base_url
+
+
+def _compact_context_via_codex_responses(
+    agent: Any,
+    messages: list,
+    system_message: str,
+    *,
+    approx_tokens: Optional[int],
+) -> Optional[list]:
+    """Compact with ``responses.compact`` and return replayable Hermes messages.
+
+    ``None`` means the provider path failed validation and the caller must fall
+    back to the existing Hermes summarizer. The provider output is kept opaque:
+    provider-emitted user/assistant messages are materialized as normal chat
+    content; encrypted ``compaction_summary`` items stay opaque and canonical.
+    """
+    try:
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _plain_responses_value,
+            _preflight_codex_input_items,
+        )
+
+        input_items = _chat_messages_to_responses_input(
+            messages,
+            current_issuer_kind="codex",
+        )
+        input_items = _preflight_codex_input_items(input_items)
+        kwargs: dict[str, Any] = {
+            "model": agent.model,
+            "instructions": system_message,
+            "input": input_items,
+            "timeout": float(getattr(agent, "_codex_compaction_timeout", 180.0) or 180.0),
+        }
+        session_id = str(getattr(agent, "session_id", "") or "").strip()
+        if session_id:
+            kwargs["extra_headers"] = {"x-hermes-session-id": session_id}
+        response = agent.client.responses.compact(**kwargs)
+        output = _plain_responses_value(getattr(response, "output", None))
+        if not isinstance(output, list) or not output:
+            raise ValueError("provider returned no compaction output")
+
+        compressed: list[dict[str, Any]] = []
+        compaction_items: list[dict[str, Any]] = []
+        for raw_item in output:
+            if not isinstance(raw_item, dict):
+                raise ValueError("provider returned a non-object compaction item")
+            item_type = raw_item.get("type")
+            if item_type == "message":
+                role = raw_item.get("role")
+                if role not in {"user", "assistant"}:
+                    raise ValueError(f"provider returned unsupported compacted role: {role!r}")
+                content = raw_item.get("content")
+                if not isinstance(content, list):
+                    raise ValueError("provider returned invalid compacted message content")
+                parts: list[dict[str, Any]] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    text = part.get("text")
+                    part_type = part.get("type")
+                    if part_type in {"input_text", "output_text"} and isinstance(text, str):
+                        parts.append({"type": "text", "text": text})
+                if not parts:
+                    raise ValueError("provider compacted message had no text")
+                compressed.append({
+                    "role": role,
+                    "content": parts[0]["text"] if len(parts) == 1 else parts,
+                    "_codex_native_compaction": True,
+                })
+            elif item_type == "compaction_summary":
+                encrypted = raw_item.get("encrypted_content")
+                if not isinstance(encrypted, str) or not encrypted:
+                    raise ValueError("provider compaction summary had no encrypted content")
+                compaction_items.append({
+                    "type": "compaction_summary",
+                    "encrypted_content": encrypted,
+                })
+            else:
+                raise ValueError(f"provider returned unsupported compaction item: {item_type!r}")
+
+        if not compressed or not compaction_items:
+            raise ValueError("provider compaction output was incomplete")
+        usage = _plain_responses_value(getattr(response, "usage", None))
+        compressed.append({
+            "role": "assistant",
+            "content": "",
+            "codex_output_items": compaction_items,
+            "provider_metrics": {
+                "native_compaction": {
+                    "input_tokens": (usage or {}).get("input_tokens") if isinstance(usage, dict) else None,
+                    "output_tokens": (usage or {}).get("output_tokens") if isinstance(usage, dict) else None,
+                    "original_messages": len(messages),
+                }
+            },
+            "_codex_native_compaction": True,
+        })
+
+        compressor = agent.context_compressor
+        compressor.compression_count += 1
+        compressor.last_prompt_tokens = -1
+        compressor.awaiting_real_usage_after_compression = True
+        compressor._last_compress_aborted = False
+        compressor._last_summary_error = None
+        before = int(approx_tokens or estimate_request_tokens_rough(messages))
+        after = int(estimate_request_tokens_rough(compressed))
+        savings = ((before - after) / before * 100.0) if before > 0 else 0.0
+        compressor._last_compression_savings_pct = savings
+        compressor._ineffective_compression_count = (
+            compressor._ineffective_compression_count + 1 if savings < 10 else 0
+        )
+        agent._last_native_codex_compaction = {
+            "input_messages": len(messages),
+            "output_messages": len(compressed),
+            "estimated_tokens_before": before,
+            "estimated_tokens_after": after,
+        }
+        session_metrics = getattr(agent, "session_provider_metrics", None)
+        if isinstance(session_metrics, dict):
+            session_metrics["native_compactions"] = int(
+                session_metrics.get("native_compactions", 0)
+            ) + 1
+        logger.info(
+            "Codex native compaction complete: messages=%d->%d tokens=~%d->~%d",
+            len(messages), len(compressed), before, after,
+        )
+        return compressed
+    except Exception as exc:
+        logger.warning(
+            "Codex native compaction failed (%s: %s); falling back to Hermes compressor",
+            type(exc).__name__, exc,
+        )
+        agent._last_native_codex_compaction_error = f"{type(exc).__name__}: {exc}"
+        return None
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -487,7 +635,11 @@ def compress_context(
     # The check itself sets ``agent._compression_warning`` so the
     # status-callback replay machinery still emits the warning to the user
     # the first time it would matter.
-    if not getattr(agent, "_compression_feasibility_checked", False):
+    native_codex_compaction = _is_native_codex_responses_compaction(agent)
+    if (
+        not native_codex_compaction
+        and not getattr(agent, "_compression_feasibility_checked", False)
+    ):
         # Mark as checked only after the probe completes. If the check
         # raises (e.g. a fatal aux-context ValueError that aborts the
         # session), leaving the flag unset is harmless; a non-fatal
@@ -635,21 +787,47 @@ def compress_context(
         except Exception:
             pass
 
-    try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
+    compressed = None
+    if native_codex_compaction:
+        compressed = _compact_context_via_codex_responses(
+            agent,
+            messages,
+            system_message,
+            approx_tokens=approx_tokens,
+        )
+
+    if compressed is None:
+        # Native Codex compaction is fail-open: only now pay the auxiliary
+        # feasibility/probe cost, then use Hermes' established summarizer.
+        if not getattr(agent, "_compression_feasibility_checked", False):
+            try:
+                check_compression_model_feasibility(agent)
+                agent._compression_feasibility_checked = True
+            except BaseException:
+                _release_lock()
+                raise
         try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+            compressed = agent.context_compressor.compress(
+                messages,
+                current_tokens=approx_tokens,
+                focus_topic=focus_topic,
+                force=force,
+            )
+        except TypeError:
+            # Plugin context engine with strict signature that doesn't accept
+            # focus_topic / force — fall back to calling without them.
+            try:
+                compressed = agent.context_compressor.compress(
+                    messages, current_tokens=approx_tokens
+                )
+            except BaseException:
+                _release_lock()
+                raise
         except BaseException:
+            # ANY exception during compress() must release the lock so the
+            # session isn't permanently blocked from future compression.
             _release_lock()
             raise
-    except BaseException:
-        # ANY exception during compress() must release the lock so the
-        # session isn't permanently blocked from future compression.
-        _release_lock()
-        raise
 
     # If compression aborted (aux LLM failed to produce a usable summary)
     # the compressor returns the input messages unchanged.  Surface the

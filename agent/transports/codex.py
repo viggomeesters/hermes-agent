@@ -16,7 +16,12 @@ from agent.transports.types import NormalizedResponse, ToolCall
 
 
 _CODEX_NATIVE_TOOL_SEARCH_MIN_FUNCTIONS = 8
+_CODEX_NATIVE_TOOL_SEARCH_SCHEMA_BUDGET_CHARS = 12_000
 _CODEX_NAMESPACE_MAX_FUNCTIONS = 8
+_CODEX_DEFAULT_EAGER_TOOLS = (
+    "terminal", "read_file", "search_files", "patch", "skill_view",
+)
+_CODEX_WEB_SEARCH_CONTEXT_SIZES = {"low", "medium", "high"}
 
 
 def _codex_supports_native_tool_search(model: str) -> bool:
@@ -60,23 +65,63 @@ def _codex_tool_category(name: str) -> str:
 
 def _codex_native_tool_search_tools(
     tools: Optional[List[Dict[str, Any]]],
-) -> Optional[List[Dict[str, Any]]]:
-    """Group function tools into deferred namespaces for hosted tool search.
+    *,
+    min_functions: int = _CODEX_NATIVE_TOOL_SEARCH_MIN_FUNCTIONS,
+    schema_budget_chars: int = _CODEX_NATIVE_TOOL_SEARCH_SCHEMA_BUDGET_CHARS,
+    eager_tools: Optional[List[str]] = None,
+) -> tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
+    """Build a cache-stable eager/deferred tool plan from static schema cost.
 
-    Built-ins remain top-level. Namespaces are capped at eight functions because
-    OpenAI recommends fewer than ten functions per namespace for search quality.
+    The decision never learns mid-conversation: it depends only on config and the
+    byte-stable tool inventory, preserving prompt-cache prefixes. Small/cheap
+    inventories remain eager; large inventories keep a fixed set of high-frequency
+    core tools eager and defer the rest into hosted-search namespaces.
     """
+    metrics: Dict[str, Any] = {
+        "tool_search_enabled": False,
+        "tool_schema_chars": 0,
+        "eager_tool_count": 0,
+        "deferred_tool_count": 0,
+    }
     if not tools:
-        return tools
+        return tools, metrics
     functions = [tool for tool in tools if tool.get("type") == "function"]
-    if len(functions) < _CODEX_NATIVE_TOOL_SEARCH_MIN_FUNCTIONS:
-        return tools
+    metrics["tool_schema_chars"] = len(json.dumps(
+        functions, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ))
+    try:
+        min_functions = max(1, int(min_functions))
+    except (TypeError, ValueError):
+        min_functions = _CODEX_NATIVE_TOOL_SEARCH_MIN_FUNCTIONS
+    try:
+        schema_budget_chars = max(1, int(schema_budget_chars))
+    except (TypeError, ValueError):
+        schema_budget_chars = _CODEX_NATIVE_TOOL_SEARCH_SCHEMA_BUDGET_CHARS
+    if (
+        len(functions) < min_functions
+        and metrics["tool_schema_chars"] <= schema_budget_chars
+    ):
+        metrics["eager_tool_count"] = len(functions)
+        return tools, metrics
 
+    eager_names = {
+        str(name).strip() for name in (eager_tools or _CODEX_DEFAULT_EAGER_TOOLS)
+        if str(name).strip()
+    }
+    eager: List[Dict[str, Any]] = []
     grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for tool in functions:
+        name = str(tool.get("name") or "")
+        if name in eager_names:
+            eager.append(tool)
+            continue
         deferred = dict(tool)
         deferred["defer_loading"] = True
-        grouped[_codex_tool_category(str(tool.get("name") or ""))].append(deferred)
+        grouped[_codex_tool_category(name)].append(deferred)
+
+    if not grouped:
+        metrics["eager_tool_count"] = len(functions)
+        return tools, metrics
 
     namespaces: List[Dict[str, Any]] = []
     for category in sorted(grouped):
@@ -92,7 +137,44 @@ def _codex_native_tool_search_tools(
             })
 
     builtins = [tool for tool in tools if tool.get("type") != "function"]
-    return [*builtins, *namespaces, {"type": "tool_search"}]
+    metrics.update({
+        "tool_search_enabled": True,
+        "eager_tool_count": len(eager),
+        "deferred_tool_count": sum(len(group) for group in grouped.values()),
+    })
+    return [*builtins, *eager, *namespaces, {"type": "tool_search"}], metrics
+
+
+def _codex_web_search_tool(config: Any) -> tuple[Dict[str, Any], bool]:
+    """Normalize optional first-party Codex web-search controls."""
+    tool: Dict[str, Any] = {"type": "web_search"}
+    include_sources = True
+    if not isinstance(config, dict):
+        return tool, include_sources
+    context_size = str(config.get("search_context_size") or "").strip().lower()
+    if context_size in _CODEX_WEB_SEARCH_CONTEXT_SIZES:
+        tool["search_context_size"] = context_size
+    domains = config.get("allowed_domains")
+    if isinstance(domains, list):
+        cleaned = [
+            str(domain).strip().lower()
+            for domain in domains
+            if isinstance(domain, str) and str(domain).strip()
+        ]
+        if cleaned:
+            tool["filters"] = {"allowed_domains": cleaned[:100]}
+    location = config.get("user_location")
+    if isinstance(location, dict):
+        normalized_location = {"type": "approximate"}
+        for key in ("country", "region", "city", "timezone"):
+            value = location.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized_location[key] = value.strip()
+        if len(normalized_location) > 1:
+            tool["user_location"] = normalized_location
+    if config.get("include_sources") is False:
+        include_sources = False
+    return tool, include_sources
 
 
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
@@ -140,6 +222,7 @@ class ResponsesApiTransport(ProviderTransport):
     # response are stamped with the endpoint that minted them. Plain class
     # attribute default; mutated on the instance, not the class.
     _last_issuer_kind: Optional[str] = None
+    _last_request_metrics: Optional[Dict[str, Any]] = None
 
     @property
     def api_mode(self) -> str:
@@ -267,6 +350,7 @@ class ResponsesApiTransport(ProviderTransport):
         # the model response instead of Hermes's tool-result/citation plumbing.
         # Generic OpenAI-compatible and GitHub Responses endpoints keep the
         # client-side function.
+        include_web_search_sources = False
         if (is_xai_responses or is_codex_backend) and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
@@ -277,7 +361,13 @@ class ResponsesApiTransport(ProviderTransport):
                     t for t in response_tools
                     if not (isinstance(t, dict) and t.get("name") == "web_search")
                 ]
-                filtered.append({"type": "web_search"})
+                if is_codex_backend:
+                    native_web_tool, include_web_search_sources = _codex_web_search_tool(
+                        params.get("native_web_search")
+                    )
+                    filtered.append(native_web_tool)
+                else:
+                    filtered.append({"type": "web_search"})
                 response_tools = filtered
 
         # OpenAI's Codex Responses backend can search deferred tool schemas
@@ -285,12 +375,25 @@ class ResponsesApiTransport(ProviderTransport):
         # out of the model context until needed while preserving the full trusted
         # inventory in the request. Smaller toolsets stay eager to avoid an
         # unnecessary hosted-search step.
+        request_metrics: Dict[str, Any] = {}
         if (
             is_codex_backend
             and _codex_supports_native_tool_search(model)
             and _codex_native_tool_search_enabled(params)
         ):
-            response_tools = _codex_native_tool_search_tools(response_tools)
+            response_tools, request_metrics = _codex_native_tool_search_tools(
+                response_tools,
+                min_functions=params.get(
+                    "native_tool_search_min_functions",
+                    _CODEX_NATIVE_TOOL_SEARCH_MIN_FUNCTIONS,
+                ),
+                schema_budget_chars=params.get(
+                    "native_tool_search_schema_budget_chars",
+                    _CODEX_NATIVE_TOOL_SEARCH_SCHEMA_BUDGET_CHARS,
+                ),
+                eager_tools=params.get("native_tool_search_eager_tools"),
+            )
+        self._last_request_metrics = request_metrics or None
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -358,6 +461,13 @@ class ResponsesApiTransport(ProviderTransport):
                 )
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
+
+        if include_web_search_sources:
+            include = list(kwargs.get("include") or [])
+            source_path = "web_search_call.action.sources"
+            if source_path not in include:
+                include.append(source_path)
+            kwargs["include"] = include
 
         request_overrides = params.get("request_overrides")
         if request_overrides:
@@ -487,8 +597,13 @@ class ResponsesApiTransport(ProviderTransport):
             provider_data["codex_output_items"] = msg.codex_output_items
         if msg and hasattr(msg, "codex_citations") and msg.codex_citations:
             provider_data["codex_citations"] = msg.codex_citations
-        if msg and hasattr(msg, "provider_metrics") and msg.provider_metrics:
-            provider_data["provider_metrics"] = msg.provider_metrics
+        response_metrics = dict(msg.provider_metrics) if (
+            msg and hasattr(msg, "provider_metrics") and msg.provider_metrics
+        ) else {}
+        if self._last_request_metrics:
+            response_metrics["request"] = dict(self._last_request_metrics)
+        if response_metrics:
+            provider_data["provider_metrics"] = response_metrics
         if msg and hasattr(msg, "reasoning_details") and msg.reasoning_details:
             provider_data["reasoning_details"] = msg.reasoning_details
 

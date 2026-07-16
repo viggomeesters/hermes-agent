@@ -1239,7 +1239,7 @@ class TestReasoningEffortDefaults:
         agent.reasoning_config = {"enabled": False}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert "reasoning" not in kwargs
-        assert kwargs["include"] == []
+        assert kwargs["include"] == ["web_search_call.action.sources"]
 
     def test_codex_reasoning_low(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",

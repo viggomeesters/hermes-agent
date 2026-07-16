@@ -357,6 +357,11 @@ def _replay_ordered_codex_output_items(
             }
             if item_id:
                 seen_item_ids.add(item_id)
+        elif item_type == "compaction_summary":
+            encrypted = raw_item.get("encrypted_content")
+            if not isinstance(encrypted, str) or not encrypted:
+                continue
+            candidate = {"type": "compaction_summary", "encrypted_content": encrypted}
         elif item_type in {
             "message", "tool_search_call", "tool_search_output", "function_call"
         }:
@@ -835,6 +840,18 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 normalized.append(reasoning_item)
             continue
 
+        if item_type == "compaction_summary":
+            encrypted = item.get("encrypted_content")
+            if not isinstance(encrypted, str) or not encrypted:
+                raise ValueError(
+                    f"Codex Responses input[{idx}] compaction_summary is missing encrypted_content."
+                )
+            normalized.append({
+                "type": "compaction_summary",
+                "encrypted_content": encrypted,
+            })
+            continue
+
         if item_type == "message":
             role = item.get("role")
             if role != "assistant":
@@ -1279,14 +1296,37 @@ def _extract_provider_metrics(response: Any, output: List[Any]) -> Dict[str, Any
         "image_generation_call", "computer_call", "local_shell_call",
         "mcp_call", "tool_search_call",
     }
+    web_sources: List[Dict[str, Any]] = []
+    seen_source_urls: set[str] = set()
     for item in output:
         item_type = getattr(item, "type", None)
         if item_type not in hosted_call_types:
             continue
         name = item_type[:-5]
         counts[name] = counts.get(name, 0) + 1
+        if item_type == "web_search_call":
+            action = _plain_responses_value(getattr(item, "action", None))
+            sources = action.get("sources") if isinstance(action, dict) else None
+            if isinstance(sources, list):
+                for source in sources:
+                    if not isinstance(source, dict):
+                        continue
+                    url = source.get("url")
+                    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+                        continue
+                    if url in seen_source_urls:
+                        continue
+                    seen_source_urls.add(url)
+                    normalized_source: Dict[str, Any] = {"url": url}
+                    for key in ("title", "type"):
+                        value = source.get(key)
+                        if isinstance(value, str) and value.strip():
+                            normalized_source[key] = value.strip()
+                    web_sources.append(normalized_source)
     if counts:
         metrics["server_tool_calls"] = counts
+    if web_sources:
+        metrics["web_search_sources"] = web_sources[:100]
     return metrics
 
 

@@ -4032,6 +4032,12 @@ class GatewaySlashCommandsMixin:
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
 
+            from agent.provider_efficiency import provider_efficiency_lines
+            efficiency_lines = provider_efficiency_lines(agent, markdown=True)
+            if efficiency_lines:
+                lines.append("")
+                lines.extend(efficiency_lines)
+
             # Per-category context breakdown (estimated — chars/4 heuristic).
             # Same engine the desktop popover uses (PR #54907). The system
             # prompt / tools / skills / memory slices read off the live agent;

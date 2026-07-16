@@ -7,6 +7,23 @@ Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (de
 `agent/prompt_caching.py`, `gateway/run.py` (session hygiene), `run_agent.py` (search for `_compress_context`)
 
 
+## Codex Responses native compaction
+
+ChatGPT Codex OAuth sessions use the provider's `responses/compact` endpoint by
+default once the normal compression threshold is reached. Hermes persists the
+encrypted `compaction_summary` as a canonical Codex output item and replays it
+losslessly. Invalid or failed provider compaction automatically falls back to the
+existing auxiliary-model compressor.
+
+```yaml
+compression:
+  codex_responses: native  # native | hermes
+```
+
+Tiny contexts are still protected by the existing automatic threshold; `/compress`
+can explicitly force a manual attempt.
+
+
 ## Pluggable Context Engine
 
 Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).

@@ -393,6 +393,29 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
+    def test_openai_codex_native_web_search_controls_and_sources(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Research."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search.",
+                "parameters": {"type": "object", "properties": {}}}}],
+            is_codex_backend=True,
+            native_web_search={
+                "search_context_size": "low",
+                "allowed_domains": ["OpenAI.com", ""],
+                "user_location": {"country": "US", "city": "New York"},
+                "include_sources": True,
+            },
+        )
+        assert kw["tools"] == [{
+            "type": "web_search",
+            "search_context_size": "low",
+            "filters": {"allowed_domains": ["openai.com"]},
+            "user_location": {"type": "approximate", "country": "US", "city": "New York"},
+        }]
+        assert "web_search_call.action.sources" in kw["include"]
+
     def test_generic_responses_path_does_not_inject_native_web_search(self, transport):
         """Generic/GitHub Responses paths keep Hermes's client function."""
         messages = [{"role": "user", "content": "Search."}]
@@ -440,13 +463,14 @@ class TestCodexBuildKwargs:
         namespaces = [tool for tool in tools if tool.get("type") == "namespace"]
         assert namespaces
         nested = [fn for namespace in namespaces for fn in namespace["tools"]]
-        assert {fn["name"] for fn in nested} == {
+        eager = [tool for tool in tools if tool.get("type") == "function"]
+        assert {fn["name"] for fn in nested} | {fn["name"] for fn in eager} == {
             tool["function"]["name"] for tool in function_tools
         }
+        assert {fn["name"] for fn in eager} == {"read_file", "terminal", "skill_view"}
         assert all(fn["defer_loading"] is True for fn in nested)
         assert all(len(namespace["tools"]) <= 8 for namespace in namespaces)
         assert all(tool["defer_loading"] is True for ns in namespaces for tool in ns["tools"])
-        assert not any(tool.get("type") == "function" for tool in tools)
 
     def test_openai_codex_native_tool_search_has_config_kill_switch(self, transport):
         tools = [{
@@ -497,7 +521,11 @@ class TestCodexBuildKwargs:
             for namespace in kw["tools"] if namespace.get("type") == "namespace"
             for fn in namespace["tools"]
         }
-        assert "read_file" in nested_names
+        assert "read_file" not in nested_names
+        assert any(
+            tool.get("type") == "function" and tool.get("name") == "read_file"
+            for tool in kw["tools"]
+        )
         assert "web_search" not in nested_names
 
     def test_openai_codex_pre_gpt54_keeps_eager_functions(self, transport):

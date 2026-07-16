@@ -8,6 +8,36 @@ sidebar_position: 1
 
 This page covers setting up inference providers for Hermes Agent — from cloud APIs like OpenRouter and Anthropic, to self-hosted endpoints like Ollama and vLLM, to advanced routing and fallback configurations. You need at least one provider configured to use Hermes.
 
+## Codex hosted-tool optimization
+
+ChatGPT Codex OAuth sessions keep common core tools eager while deferring large or
+uncommon schemas to provider-native tool search. Routing depends only on static
+schema size and configuration, keeping the request prefix cache-stable. Native web
+search also supports search depth, allowed domains, approximate user location, and
+full source-provenance capture.
+
+```yaml
+agent:
+  codex_native_tool_search: true
+  codex_native_tool_search_min_functions: 8
+  codex_native_tool_search_schema_budget_chars: 12000
+  codex_native_tool_search_eager_tools:
+    - terminal
+    - read_file
+    - search_files
+    - patch
+    - skill_view
+  codex_web_search:
+    search_context_size: medium  # low | medium | high
+    allowed_domains: []
+    user_location: {}
+    include_sources: true
+```
+
+`/usage` reports cache-hit percentage, eager/deferred schema counts, hosted tool
+calls, captured source records, and native compactions without exposing full tool
+schemas or opaque reasoning payloads.
+
 ## Inference Providers
 
 You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:

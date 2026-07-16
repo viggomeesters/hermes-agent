@@ -1265,7 +1265,7 @@ class TestMessageStorage:
         )
 
         conv = db.get_messages_as_conversation("s1")
-        assert conv[0]["codex_tool_search_items"] == tool_search_items
+        assert "codex_tool_search_items" not in conv[0]
         assert conv[0]["codex_output_items"] == output_items
         assert conv[0]["codex_citations"] == citations
         assert conv[0]["provider_metrics"] == provider_metrics

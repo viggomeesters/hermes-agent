@@ -1570,6 +1570,16 @@ def init_agent(
     compression_in_place = is_truthy_value(
         _compression_cfg.get("in_place"), default=False
     )
+    codex_responses_compaction = str(
+        _compression_cfg.get("codex_responses", "native") or "native"
+    ).lower()
+    if codex_responses_compaction not in {"native", "hermes"}:
+        _ra().logger.warning(
+            "Invalid compression.codex_responses=%r; using 'native'. "
+            "Valid values are: native, hermes.",
+            codex_responses_compaction,
+        )
+        codex_responses_compaction = "native"
     codex_app_server_auto_compaction = str(
         _compression_cfg.get("codex_app_server_auto", "native") or "native"
     ).lower()
@@ -1783,6 +1793,7 @@ def init_agent(
 
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
+        agent.context_engine_name = str(getattr(_selected_engine, "name", _engine_name))
         # External engines own compaction policy: the host compression
         # threshold (including the Codex gpt-5.5 autoraise above) only
         # configures the built-in ContextCompressor and never reaches the
@@ -1810,6 +1821,7 @@ def init_agent(
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
+        agent.context_engine_name = "compressor"
         agent.context_compressor = ContextCompressor(
             model=agent.model,
             threshold_percent=compression_threshold,
@@ -1834,6 +1846,7 @@ def init_agent(
             pass
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
+    agent.codex_responses_compaction = codex_responses_compaction
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
 
     # Reject models whose context window is below the minimum required

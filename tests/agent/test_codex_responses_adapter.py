@@ -235,6 +235,27 @@ def test_tool_search_items_round_trip_before_function_call():
     })["input"] == items
 
 
+def test_compaction_summary_round_trips_as_canonical_output():
+    items = _chat_messages_to_responses_input([{
+        "role": "assistant",
+        "content": "",
+        "codex_output_items": [{
+            "type": "compaction_summary",
+            "encrypted_content": "opaque-summary",
+        }],
+    }], current_issuer_kind="codex")
+    assert items == [{
+        "type": "compaction_summary",
+        "encrypted_content": "opaque-summary",
+    }]
+    assert _preflight_codex_api_kwargs({
+        "model": "gpt-5.6-sol",
+        "instructions": "help",
+        "input": items,
+        "store": False,
+    })["input"] == items
+
+
 def test_canonical_codex_output_preserves_wire_order_namespace_and_citations():
     ordered = [
         {
@@ -335,7 +356,13 @@ def test_normalize_preserves_citations_tool_search_and_provider_metrics():
                 type="tool_search_output", execution="server", call_id=None,
                 status="completed", tools=[{"type": "namespace", "name": "hermes_web", "description": "Web.", "tools": [{"type": "function", "name": "web_extract", "description": "Extract.", "parameters": {"type": "object", "properties": {}}, "strict": False, "defer_loading": True}]}],
             ),
-            SimpleNamespace(type="web_search_call", status="completed"),
+            SimpleNamespace(
+                type="web_search_call", status="completed",
+                action=SimpleNamespace(sources=[
+                    {"url": "https://example.com/source", "title": "Primary source", "type": "url"},
+                    {"url": "https://example.com/secondary", "title": "Secondary", "type": "url"},
+                ]),
+            ),
             SimpleNamespace(
                 type="message", role="assistant", status="completed",
                 content=[SimpleNamespace(
@@ -379,6 +406,10 @@ def test_normalize_preserves_citations_tool_search_and_provider_metrics():
         "service_tier": "auto",
         "tool_usage": {"web_search": {"num_requests": 2}},
         "server_tool_calls": {"tool_search": 1, "web_search": 1},
+        "web_search_sources": [
+            {"url": "https://example.com/source", "title": "Primary source", "type": "url"},
+            {"url": "https://example.com/secondary", "title": "Secondary", "type": "url"},
+        ],
     }
 
 

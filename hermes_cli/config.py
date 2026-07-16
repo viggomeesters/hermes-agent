@@ -1005,6 +1005,20 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
+        # ChatGPT Codex OAuth hosted-tool controls. The static schema budget and
+        # eager list are cache-stable for the whole conversation.
+        "codex_native_tool_search": True,
+        "codex_native_tool_search_min_functions": 8,
+        "codex_native_tool_search_schema_budget_chars": 12000,
+        "codex_native_tool_search_eager_tools": [
+            "terminal", "read_file", "search_files", "patch", "skill_view",
+        ],
+        "codex_web_search": {
+            "search_context_size": "medium",  # low | medium | high
+            "allowed_domains": [],
+            "user_location": {},
+            "include_sources": True,
+        },
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
@@ -1437,6 +1451,11 @@ DEFAULT_CONFIG = {
                                       # autoraise banner. Set False to keep the
                                       # 85% threshold autoraise but suppress the
                                       # user-facing notice in CLI/gateway output.
+        "codex_responses": "native",  # ChatGPT Codex OAuth Responses compaction.
+                                      # native = call responses/compact and preserve its
+                                      # encrypted compaction_summary; hermes = use the
+                                      # auxiliary-model summarizer. Native failures
+                                      # automatically fall back to Hermes compression.
         "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
                                       # compaction mode. The codex agent owns the real
                                       # thread context, so Hermes' summarizer cannot

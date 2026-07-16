@@ -3477,7 +3477,13 @@ class SessionDB:
         platform-specific flows like yuanbao's recall guard to redact a
         message by its platform-side identifier.
         """
-        # Serialize structured fields to JSON before entering the write txn
+        # Serialize structured fields to JSON before entering the write txn.
+        # Canonical Codex output supersedes the legacy split representations for
+        # new rows; legacy-only callers are still supported unchanged.
+        if codex_output_items:
+            codex_reasoning_items = None
+            codex_message_items = None
+            codex_tool_search_items = None
         reasoning_details_json = (
             json.dumps(reasoning_details)
             if reasoning_details else None
@@ -3607,6 +3613,14 @@ class SessionDB:
             codex_output_items = (
                 msg.get("codex_output_items") if role == "assistant" else None
             )
+            # Canonical output is the sole persisted representation for new
+            # Codex turns. Legacy split fields remain accepted/read for rows
+            # created by older Hermes versions, but are not duplicated beside
+            # codex_output_items in fresh rows.
+            if codex_output_items:
+                codex_reasoning_items = None
+                codex_message_items = None
+                codex_tool_search_items = None
             codex_citations = msg.get("codex_citations") if role == "assistant" else None
             provider_metrics = msg.get("provider_metrics") if role == "assistant" else None
             reasoning_details_json = (

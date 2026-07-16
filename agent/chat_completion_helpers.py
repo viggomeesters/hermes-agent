@@ -753,12 +753,27 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                 )
 
         native_tool_search = True
+        native_tool_search_min_functions = 8
+        native_tool_search_schema_budget_chars = 12_000
+        native_tool_search_eager_tools = None
+        native_web_search = None
         try:
             from hermes_cli.config import load_config as _load_config
             _cfg = _load_config() or {}
             _agent_cfg = _cfg.get("agent") if isinstance(_cfg, dict) else None
-            if isinstance(_agent_cfg, dict) and "codex_native_tool_search" in _agent_cfg:
-                native_tool_search = _agent_cfg.get("codex_native_tool_search") is not False
+            if isinstance(_agent_cfg, dict):
+                if "codex_native_tool_search" in _agent_cfg:
+                    native_tool_search = _agent_cfg.get("codex_native_tool_search") is not False
+                native_tool_search_min_functions = _agent_cfg.get(
+                    "codex_native_tool_search_min_functions", 8
+                )
+                native_tool_search_schema_budget_chars = _agent_cfg.get(
+                    "codex_native_tool_search_schema_budget_chars", 12_000
+                )
+                native_tool_search_eager_tools = _agent_cfg.get(
+                    "codex_native_tool_search_eager_tools"
+                )
+                native_web_search = _agent_cfg.get("codex_web_search")
         except Exception:
             pass
 
@@ -775,6 +790,10 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
             native_tool_search=native_tool_search,
+            native_tool_search_min_functions=native_tool_search_min_functions,
+            native_tool_search_schema_budget_chars=native_tool_search_schema_budget_chars,
+            native_tool_search_eager_tools=native_tool_search_eager_tools,
+            native_web_search=native_web_search,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
             replay_encrypted_reasoning=bool(
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
@@ -947,6 +966,67 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
 
 
+def _accumulate_session_provider_metrics(agent: Any, metrics: Any) -> None:
+    """Aggregate safe provider-efficiency counters for /usage.
+
+    Opaque reasoning and full tool schemas are deliberately excluded. Source
+    provenance is reduced to unique URL count/list already sanitized upstream.
+    """
+    if not isinstance(metrics, dict):
+        return
+    aggregate = getattr(agent, "session_provider_metrics", None)
+    if not isinstance(aggregate, dict):
+        aggregate = {
+            "server_tool_calls": {},
+            "web_search_sources": [],
+            "native_compactions": 0,
+        }
+        agent.session_provider_metrics = aggregate
+
+    server_calls = metrics.get("server_tool_calls")
+    if isinstance(server_calls, dict):
+        target = aggregate.setdefault("server_tool_calls", {})
+        for name, count in server_calls.items():
+            try:
+                target[str(name)] = int(target.get(str(name), 0)) + max(0, int(count))
+            except (TypeError, ValueError):
+                continue
+
+    request = metrics.get("request")
+    if isinstance(request, dict):
+        aggregate["last_request"] = {
+            key: request.get(key)
+            for key in (
+                "tool_search_enabled", "tool_schema_chars",
+                "eager_tool_count", "deferred_tool_count",
+            )
+            if request.get(key) is not None
+        }
+
+    sources = metrics.get("web_search_sources")
+    if isinstance(sources, list):
+        existing = aggregate.setdefault("web_search_sources", [])
+        seen = {
+            source.get("url") for source in existing
+            if isinstance(source, dict) and isinstance(source.get("url"), str)
+        }
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            url = source.get("url")
+            if not isinstance(url, str) or url in seen:
+                continue
+            existing.append({
+                key: source[key] for key in ("url", "title", "type")
+                if isinstance(source.get(key), str)
+            })
+            seen.add(url)
+        del existing[100:]
+
+    if isinstance(metrics.get("native_compaction"), dict):
+        aggregate["native_compactions"] = int(aggregate.get("native_compactions", 0)) + 1
+
+
 def build_assistant_message(agent, assistant_message, finish_reason: str) -> dict:
     """Build a normalized assistant message dict from an API response message.
 
@@ -1099,15 +1179,14 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if ordered_blocks:
         msg["anthropic_content_blocks"] = ordered_blocks
 
-    # Codex Responses API: preserve encrypted reasoning items for
-    # multi-turn continuity. These get replayed as input on the next turn.
+    # Keep the legacy split fields in live memory for compatibility with
+    # duplicate detection and older transports. SessionDB suppresses their JSON
+    # columns when canonical codex_output_items is present, so new persisted rows
+    # avoid duplicate storage while old rows remain replayable.
     codex_items = getattr(assistant_message, "codex_reasoning_items", None)
     if codex_items:
         msg["codex_reasoning_items"] = codex_items
 
-    # Codex Responses API: preserve exact assistant message items (with
-    # id/phase) so follow-up turns can replay structured items instead of
-    # flattening to plain text. This is required for prefix cache hits.
     codex_message_items = getattr(assistant_message, "codex_message_items", None)
     if codex_message_items:
         msg["codex_message_items"] = codex_message_items
@@ -1127,6 +1206,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     provider_metrics = getattr(assistant_message, "provider_metrics", None)
     if provider_metrics:
         msg["provider_metrics"] = provider_metrics
+        _accumulate_session_provider_metrics(agent, provider_metrics)
 
     if assistant_tool_calls:
         tool_calls = []

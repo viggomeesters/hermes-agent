@@ -9678,6 +9678,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
 
+        from agent.provider_efficiency import provider_efficiency_lines
+        efficiency_lines = provider_efficiency_lines(agent)
+        if efficiency_lines:
+            print()
+            for line in efficiency_lines:
+                print(f"  {line}")
+
         # Account limits -- fetched off-thread with a hard timeout so slow
         # provider APIs don't hang the prompt.
         provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
