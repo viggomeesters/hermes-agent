@@ -27890,9 +27890,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
 
-        if notify_mode == "off" and not agent_notify:
-            # Still wait for the process to exit so we can log it, but don't
-            # push any messages to the user.
+        if notify_mode == "off":
+            # ``off`` is an absolute user preference. It suppresses both
+            # gateway progress/final messages and agent-requested
+            # ``notify_on_complete`` injections. The process remains tracked
+            # and can still be inspected explicitly through the process tool.
             while True:
                 await asyncio.sleep(interval)
                 session = process_registry.get(session_id)
