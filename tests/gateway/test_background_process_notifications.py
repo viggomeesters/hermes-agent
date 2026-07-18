@@ -205,6 +205,31 @@ async def test_run_process_watcher_respects_notification_mode(
 
 
 @pytest.mark.asyncio
+async def test_off_mode_suppresses_notify_on_complete_injection(monkeypatch, tmp_path):
+    """The explicit off preference wins over an agent-requested completion turn."""
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "off")
+    runner._inject_watch_notification = AsyncMock()
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+
+    await runner._run_process_watcher(watcher)
+
+    adapter = runner.adapters[Platform.TELEGRAM]
+    assert adapter.send.await_count == 0
+    assert runner._inject_watch_notification.await_count == 0
+
+
+@pytest.mark.asyncio
 async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
     """thread_id from watcher dict is forwarded as metadata to adapter.send()."""
     import tools.process_registry as pr_module
