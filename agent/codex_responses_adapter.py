@@ -377,6 +377,67 @@ def _replay_ordered_codex_output_items(
     return replayed
 
 
+def _replay_chat_function_calls(
+    raw_tool_calls: Any,
+    *,
+    item_offset: int,
+) -> List[Dict[str, Any]]:
+    """Normalize chat-style tool calls into canonical Responses items."""
+    if not isinstance(raw_tool_calls, list):
+        return []
+
+    replayed: List[Dict[str, Any]] = []
+    for tc in raw_tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function", {})
+        fn_name = fn.get("name")
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            continue
+
+        embedded_call_id, embedded_response_item_id = _split_responses_tool_id(
+            tc.get("id")
+        )
+        call_id = tc.get("call_id")
+        if not isinstance(call_id, str) or not call_id.strip():
+            call_id = embedded_call_id
+        if not isinstance(call_id, str) or not call_id.strip():
+            if (
+                isinstance(embedded_response_item_id, str)
+                and embedded_response_item_id.startswith("fc_")
+                and len(embedded_response_item_id) > len("fc_")
+            ):
+                call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
+            else:
+                raw_args = str(fn.get("arguments", "{}"))
+                call_id = _deterministic_call_id(
+                    fn_name, raw_args, item_offset + len(replayed)
+                )
+        call_id = call_id.strip()
+
+        arguments = fn.get("arguments", "{}")
+        if isinstance(arguments, dict):
+            arguments = json.dumps(arguments, ensure_ascii=False)
+        elif not isinstance(arguments, str):
+            arguments = str(arguments)
+        arguments = arguments.strip() or "{}"
+
+        replay_function_call = {
+            "type": "function_call",
+            "call_id": call_id,
+            "name": fn_name,
+            "arguments": arguments,
+        }
+        namespace = tc.get("namespace")
+        if not isinstance(namespace, str) or not namespace.strip():
+            namespace = (tc.get("provider_data") or {}).get("namespace")
+        if isinstance(namespace, str) and namespace.strip():
+            replay_function_call["namespace"] = namespace.strip()
+        replayed.append(replay_function_call)
+
+    return replayed
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
@@ -449,6 +510,22 @@ def _chat_messages_to_responses_input(
                 )
                 if ordered_output is not None:
                     items.extend(ordered_output)
+                    # Sequence repair can merge the native-compaction marker
+                    # assistant turn with the next assistant tool-call turn.
+                    # Preserve calls absent from canonical output so a later
+                    # function_call_output never becomes orphaned.
+                    canonical_call_ids = {
+                        item.get("call_id")
+                        for item in ordered_output
+                        if item.get("type") == "function_call"
+                    }
+                    merged_calls = _replay_chat_function_calls(
+                        msg.get("tool_calls"), item_offset=len(items)
+                    )
+                    items.extend(
+                        call for call in merged_calls
+                        if call.get("call_id") not in canonical_call_ids
+                    )
                     continue
 
                 # Legacy fallback for sessions persisted before canonical,
@@ -592,53 +669,9 @@ def _chat_messages_to_responses_input(
                     # following item.
                     items.append({"role": "assistant", "content": ""})
 
-                tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tc in tool_calls:
-                        if not isinstance(tc, dict):
-                            continue
-                        fn = tc.get("function", {})
-                        fn_name = fn.get("name")
-                        if not isinstance(fn_name, str) or not fn_name.strip():
-                            continue
-
-                        embedded_call_id, embedded_response_item_id = _split_responses_tool_id(
-                            tc.get("id")
-                        )
-                        call_id = tc.get("call_id")
-                        if not isinstance(call_id, str) or not call_id.strip():
-                            call_id = embedded_call_id
-                        if not isinstance(call_id, str) or not call_id.strip():
-                            if (
-                                isinstance(embedded_response_item_id, str)
-                                and embedded_response_item_id.startswith("fc_")
-                                and len(embedded_response_item_id) > len("fc_")
-                            ):
-                                call_id = f"call_{embedded_response_item_id[len('fc_'):]}"
-                            else:
-                                _raw_args = str(fn.get("arguments", "{}"))
-                                call_id = _deterministic_call_id(fn_name, _raw_args, len(items))
-                        call_id = call_id.strip()
-
-                        arguments = fn.get("arguments", "{}")
-                        if isinstance(arguments, dict):
-                            arguments = json.dumps(arguments, ensure_ascii=False)
-                        elif not isinstance(arguments, str):
-                            arguments = str(arguments)
-                        arguments = arguments.strip() or "{}"
-
-                        replay_function_call = {
-                            "type": "function_call",
-                            "call_id": call_id,
-                            "name": fn_name,
-                            "arguments": arguments,
-                        }
-                        namespace = tc.get("namespace")
-                        if not isinstance(namespace, str) or not namespace.strip():
-                            namespace = (tc.get("provider_data") or {}).get("namespace")
-                        if isinstance(namespace, str) and namespace.strip():
-                            replay_function_call["namespace"] = namespace.strip()
-                        items.append(replay_function_call)
+                items.extend(_replay_chat_function_calls(
+                    msg.get("tool_calls"), item_offset=len(items)
+                ))
                 continue
 
             # Non-assistant (user) role: emit multimodal parts when present,

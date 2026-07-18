@@ -256,6 +256,49 @@ def test_compaction_summary_round_trips_as_canonical_output():
     })["input"] == items
 
 
+def test_compaction_summary_keeps_merged_function_call_paired_with_output():
+    """A compaction marker merged with the next assistant tool call must not
+    make the canonical replay path discard that call while retaining its result.
+    """
+    items = _chat_messages_to_responses_input([
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_output_items": [{
+                "type": "compaction_summary",
+                "encrypted_content": "opaque-summary",
+            }],
+            "tool_calls": [{
+                "id": "call_after_compaction",
+                "call_id": "call_after_compaction",
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "arguments": '{"command":"git status --short"}',
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_after_compaction",
+            "content": '{"output":"clean","exit_code":0}',
+        },
+    ], current_issuer_kind="codex")
+
+    assert [item["type"] for item in items] == [
+        "compaction_summary",
+        "function_call",
+        "function_call_output",
+    ]
+    assert items[1]["call_id"] == items[2]["call_id"] == "call_after_compaction"
+    assert _preflight_codex_api_kwargs({
+        "model": "gpt-5.6-sol",
+        "instructions": "help",
+        "input": items,
+        "store": False,
+    })["input"] == items
+
+
 def test_canonical_codex_output_preserves_wire_order_namespace_and_citations():
     ordered = [
         {
