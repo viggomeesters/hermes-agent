@@ -925,6 +925,37 @@ class TestDeliverResultWrapping:
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
+    def test_explicit_chat_delivery_does_not_warn_that_origin_thread_was_lost(self, caplog):
+        """An explicit ``platform:chat_id`` target intentionally selects the
+        root chat.  A topic-scoped creation origin must not turn that valid
+        routing choice into a recurring scheduler warning.
+        """
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "root-chat-job",
+            "deliver": "telegram:8340627826",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "8340627826",
+                "thread_id": "34915",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             caplog.at_level("WARNING", logger="cron.scheduler"):
+            result = _deliver_result(job, "hello")
+
+        assert result is None
+        assert send_mock.call_args.kwargs["thread_id"] is None
+        assert "delivery target lost it" not in caplog.text
+
 
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""
