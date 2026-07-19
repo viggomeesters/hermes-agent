@@ -695,6 +695,24 @@ class TestFindAliasForProfile:
         (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
         assert find_alias_for_profile("steve") is None
 
+    def test_ignores_instructional_echo_before_real_exec(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "steve-project").write_text(
+            "#!/usr/bin/env bash\n"
+            "echo 'Run: cd repo && hermes -p steve' >&2\n"
+            "exec hermes -p steve \"$@\"\n"
+        )
+        assert find_alias_for_profile("steve") == "steve-project"
+
+    def test_custom_alias_on_windows(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("qiaobusi", target="steve")
+        # The .bat extension must be stripped from the returned alias name.
+        assert find_alias_for_profile("steve") == "qiaobusi"
 
     def test_list_profiles_surfaces_custom_alias(self, profile_env):
         from hermes_cli.profiles import (
@@ -1175,5 +1193,4 @@ class TestResolveProfileEnvSpelling:
         # No HERMES_HOME: the platform default root applies (existing contract).
         monkeypatch.delenv("HERMES_HOME", raising=False)
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
-
 

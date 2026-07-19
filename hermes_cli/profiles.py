@@ -650,7 +650,6 @@ def build_alias_map() -> dict[str, str]:
     if not wrapper_dir.is_dir():
         return result
     is_windows = sys.platform == "win32"
-    prefix = "hermes -p "
 
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
@@ -666,12 +665,18 @@ def build_alias_map() -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
             continue
-        idx = content.find(prefix)
-        if idx == -1:
-            continue
-        rest = content[idx + len(prefix):]
-        # Profile id is the first whitespace-delimited token after the flag.
-        canon = rest.split(None, 1)[0].strip() if rest.strip() else ""
+        canon = ""
+        for line in content.splitlines():
+            try:
+                tokens = shlex.split(line, comments=True, posix=not is_windows)
+            except ValueError:
+                continue
+            for index, token in enumerate(tokens[:-2]):
+                if Path(token).name == "hermes" and tokens[index + 1] in {"-p", "--profile"}:
+                    canon = tokens[index + 2]
+                    break
+            if canon:
+                break
         if not canon:
             continue
         canon = normalize_profile_name(canon)
