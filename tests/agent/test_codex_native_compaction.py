@@ -68,6 +68,41 @@ def test_native_codex_compaction_builds_replayable_messages():
     assert agent.session_provider_metrics["native_compactions"] == 1
 
 
+def test_native_codex_compaction_drops_interrupted_tool_call_before_resume():
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(type="message", role="user", content=[
+                SimpleNamespace(type="input_text", text="Hervat")
+            ]),
+            SimpleNamespace(type="compaction_summary", encrypted_content="opaque"),
+        ],
+        usage=SimpleNamespace(input_tokens=123, output_tokens=45),
+    )
+    agent, responses = _agent(response=response)
+
+    compacted = _compact_context_via_codex_responses(
+        agent,
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_interrupted",
+                    "call_id": "call_interrupted",
+                    "type": "function",
+                    "function": {"name": "delegate_task", "arguments": '{"goal":"review"}'},
+                }],
+            },
+            {"role": "user", "content": "Hervat"},
+        ],
+        "system",
+        approx_tokens=1000,
+    )
+
+    assert compacted is not None
+    assert responses.kwargs["input"] == [{"role": "user", "content": "Hervat"}]
+
+
 def test_native_compaction_respects_external_context_engine():
     agent = SimpleNamespace(
         codex_responses_compaction="native",

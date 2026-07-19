@@ -299,6 +299,47 @@ def test_compaction_summary_keeps_merged_function_call_paired_with_output():
     })["input"] == items
 
 
+def test_preflight_drops_interrupted_function_calls_without_outputs():
+    """Restored sessions may contain a tool call interrupted before its
+    result was persisted. Codex must not receive that invalid call while later
+    complete call/output pairs remain intact.
+    """
+    valid_call = {
+        "type": "function_call",
+        "call_id": "call_complete",
+        "name": "terminal",
+        "arguments": '{"command":"true"}',
+    }
+    valid_output = {
+        "type": "function_call_output",
+        "call_id": "call_complete",
+        "output": '{"exit_code":0}',
+    }
+
+    result = _preflight_codex_api_kwargs({
+        "model": "gpt-5.6-sol",
+        "instructions": "help",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_interrupted",
+                "name": "delegate_task",
+                "arguments": '{"goal":"review"}',
+            },
+            {"role": "user", "content": "Hervat"},
+            valid_call,
+            valid_output,
+        ],
+        "store": False,
+    })
+
+    assert result["input"] == [
+        {"role": "user", "content": "Hervat"},
+        valid_call,
+        valid_output,
+    ]
+
+
 def test_canonical_codex_output_preserves_wire_order_namespace_and_citations():
     ordered = [
         {

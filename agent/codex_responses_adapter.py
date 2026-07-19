@@ -1009,6 +1009,75 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _repair_codex_function_call_pairs(
+    items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove interrupted Responses function items before provider dispatch.
+
+    Codex requires each contiguous ``function_call`` block to be followed
+    immediately by matching ``function_call_output`` items. Gateway restarts
+    or resumed sessions can preserve an accepted call while losing its tool
+    result. Replaying that partial block makes every later request fail with
+    HTTP 400. Drop only unpaired function items; preserve complete parallel
+    call/output blocks and all surrounding conversation items.
+    """
+    repaired: List[Dict[str, Any]] = []
+    dropped_calls = 0
+    dropped_outputs = 0
+    idx = 0
+
+    while idx < len(items):
+        item = items[idx]
+        item_type = item.get("type")
+
+        if item_type == "function_call":
+            calls: List[Dict[str, Any]] = []
+            while idx < len(items) and items[idx].get("type") == "function_call":
+                calls.append(items[idx])
+                idx += 1
+
+            outputs: List[Dict[str, Any]] = []
+            while idx < len(items) and items[idx].get("type") == "function_call_output":
+                outputs.append(items[idx])
+                idx += 1
+
+            # A trailing function-call block is valid provider output being
+            # normalized by some direct callers/tests. The broken replay case
+            # is specifically a call abandoned before a later conversation
+            # item (typically a resumed user turn) arrived.
+            if not outputs and idx == len(items):
+                repaired.extend(calls)
+                continue
+
+            call_ids = {call.get("call_id") for call in calls}
+            output_ids = {output.get("call_id") for output in outputs}
+            paired_ids = call_ids & output_ids
+            kept_calls = [call for call in calls if call.get("call_id") in paired_ids]
+            kept_outputs = [output for output in outputs if output.get("call_id") in paired_ids]
+            repaired.extend(kept_calls)
+            repaired.extend(kept_outputs)
+            dropped_calls += len(calls) - len(kept_calls)
+            dropped_outputs += len(outputs) - len(kept_outputs)
+            continue
+
+        if item_type == "function_call_output":
+            dropped_outputs += 1
+            idx += 1
+            continue
+
+        repaired.append(item)
+        idx += 1
+
+    if dropped_calls or dropped_outputs:
+        logger.warning(
+            "Repaired Codex input by dropping interrupted function items "
+            "(calls=%d, outputs=%d).",
+            dropped_calls,
+            dropped_outputs,
+        )
+    return repaired
+
+
 def _preflight_codex_tool_definition(tool: Any, *, path: str) -> Dict[str, Any]:
     """Validate one Responses tool definition, including hosted namespaces."""
     if not isinstance(tool, dict):
@@ -1082,7 +1151,9 @@ def _preflight_codex_api_kwargs(
         instructions = str(instructions)
     instructions = instructions.strip() or DEFAULT_AGENT_IDENTITY
 
-    normalized_input = _preflight_codex_input_items(api_kwargs.get("input"))
+    normalized_input = _repair_codex_function_call_pairs(
+        _preflight_codex_input_items(api_kwargs.get("input"))
+    )
 
     tools = api_kwargs.get("tools")
     normalized_tools = None

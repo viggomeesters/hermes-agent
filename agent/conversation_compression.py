@@ -465,13 +465,16 @@ def _compact_context_via_codex_responses(
             _chat_messages_to_responses_input,
             _plain_responses_value,
             _preflight_codex_input_items,
+            _repair_codex_function_call_pairs,
         )
 
         input_items = _chat_messages_to_responses_input(
             messages,
             current_issuer_kind="codex",
         )
-        input_items = _preflight_codex_input_items(input_items)
+        input_items = _repair_codex_function_call_pairs(
+            _preflight_codex_input_items(input_items)
+        )
         kwargs: dict[str, Any] = {
             "model": agent.model,
             "instructions": system_message,
