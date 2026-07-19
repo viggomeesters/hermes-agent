@@ -3196,7 +3196,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
         origin_thread = origin.get("thread_id")
-        if origin_thread and not thread_id:
+        deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+        if deliver_value == "origin" and origin_thread and not thread_id:
             logger.warning(
                 "Job '%s': origin has thread_id=%s but delivery target lost it "
                 "(deliver=%s, target=%s)",
