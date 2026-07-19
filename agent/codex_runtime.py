@@ -824,6 +824,14 @@ def _consume_codex_event_stream(
 
 
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
+    """Execute a Codex request while holding the shared account-wide slot."""
+    from agent.provider_concurrency import provider_request_slot
+
+    with provider_request_slot("openai-codex", purpose="primary"):
+        return _run_codex_stream_unlimited(agent, api_kwargs, client, on_first_delta)
+
+
+def _run_codex_stream_unlimited(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
     Uses ``responses.create(stream=True)`` (low-level raw event iteration)
