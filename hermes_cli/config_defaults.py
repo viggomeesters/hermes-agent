@@ -9,6 +9,9 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    # Optional account-wide request caps, shared across all Hermes profiles.
+    # Example: {"openai-codex": {"max_concurrent_requests": 3}}
+    "provider_concurrency": {},
     "toolsets": ["hermes-cli"],
     # SQLite journal mode used by every Hermes database opener. WAL is the
     # normal default; set DELETE for weak-fsync/shared filesystems where WAL is

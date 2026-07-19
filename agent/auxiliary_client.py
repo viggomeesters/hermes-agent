@@ -1224,20 +1224,23 @@ class _CodexCompletionsAdapter:
                 _notify_aux_progress()
                 _check_cancelled()
 
-            event_stream = self._client.responses.create(**stream_kwargs)
-            try:
-                final = _consume_codex_event_stream(
-                    event_stream,
-                    model=resp_kwargs.get("model"),
-                    on_event=_on_each_event,
-                )
-            finally:
-                close_fn = getattr(event_stream, "close", None)
-                if callable(close_fn):
-                    try:
-                        close_fn()
-                    except Exception:
-                        pass
+            from agent.provider_concurrency import provider_request_slot
+
+            with provider_request_slot("openai-codex", purpose="auxiliary"):
+                event_stream = self._client.responses.create(**stream_kwargs)
+                try:
+                    final = _consume_codex_event_stream(
+                        event_stream,
+                        model=resp_kwargs.get("model"),
+                        on_event=_on_each_event,
+                    )
+                finally:
+                    close_fn = getattr(event_stream, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            pass
 
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
