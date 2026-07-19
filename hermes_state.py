@@ -508,7 +508,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     through the FTS triggers — is reported as unhealthy rather than slipping
     past as a false "ok" (#50502).
     """
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    # Doctor is diagnostic, not a reason to wait behind a busy live gateway.
+    conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=1.0)
     try:
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()

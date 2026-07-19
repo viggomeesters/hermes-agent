@@ -874,6 +874,11 @@ def is_container() -> bool:
     global _container_detected
     if _container_detected is not None:
         return _container_detected
+    # WSL can expose container-runtime markers from Docker Desktop while
+    # Hermes itself is supervised by user systemd on the WSL host.
+    if is_wsl():
+        _container_detected = False
+        return False
     if os.path.exists("/.dockerenv"):
         _container_detected = True
         return True

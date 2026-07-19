@@ -296,6 +296,29 @@ def test_fts_write_corruption_detected_by_write_probe(tmp_path):
     assert reason is not None
 
 
+def test_write_health_probe_fails_fast_when_database_is_busy(tmp_path):
+    """Doctor must report contention instead of hanging behind a live writer."""
+    import time
+
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    writer = sqlite3.connect(str(db_path), isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        started = time.monotonic()
+        reason = _db_opens_cleanly(db_path)
+        elapsed = time.monotonic() - started
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+
+    assert reason is not None
+    assert "locked" in reason.lower()
+    assert elapsed < 2.0
+
+
 def test_fts_write_corruption_repaired_in_place(tmp_path):
     """repair_state_db_schema rebuilds the FTS index; reads + writes resume."""
     from hermes_state import _db_opens_cleanly
