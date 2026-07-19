@@ -3345,8 +3345,12 @@ def run_doctor(args):
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
     try:
-        from hermes_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
-        import re as _re
+        from hermes_cli.profiles import (
+            _get_wrapper_dir,
+            extract_profile_from_wrapper,
+            list_profiles,
+            profile_exists,
+        )
 
         named_profiles = [p for p in list_profiles() if not p.is_default]
         if named_profiles:
@@ -3375,11 +3379,9 @@ def run_doctor(args):
                     if not wrapper.is_file():
                         continue
                     try:
-                        content = wrapper.read_text(encoding="utf-8")
-                        if "hermes -p" in content:
-                            _m = _re.search(r"hermes -p (\S+)", content)
-                            if _m and not profile_exists(_m.group(1)):
-                                check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+                        target = extract_profile_from_wrapper(wrapper.read_text(encoding="utf-8"))
+                        if target and not profile_exists(target):
+                            check_warn(f"Orphan alias: {wrapper.name} → profile '{target}' no longer exists")
                     except Exception:
                         pass
     except ImportError:

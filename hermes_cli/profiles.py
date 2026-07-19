@@ -636,6 +636,24 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
 _WRAPPER_READ_LIMIT = 8192
 
 
+def extract_profile_from_wrapper(content: str, *, is_windows: bool = False) -> str | None:
+    """Return the profile targeted by an actual Hermes command in a wrapper.
+
+    Instructional/error text may mention ``hermes -p`` before the real exec
+    line. Tokenizing line-by-line avoids treating those quoted examples as the
+    wrapper target.
+    """
+    for line in content.splitlines():
+        try:
+            tokens = shlex.split(line, comments=True, posix=not is_windows)
+        except ValueError:
+            continue
+        for index, token in enumerate(tokens[:-2]):
+            if Path(token).name == "hermes" and tokens[index + 1] in {"-p", "--profile"}:
+                return tokens[index + 2]
+    return None
+
+
 def build_alias_map() -> dict[str, str]:
     """Single-pass reverse map ``{canonical_profile -> alias_name}``.
 
@@ -665,18 +683,7 @@ def build_alias_map() -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             # UnicodeDecodeError = a binary on PATH (ffmpeg etc.) — not a wrapper.
             continue
-        canon = ""
-        for line in content.splitlines():
-            try:
-                tokens = shlex.split(line, comments=True, posix=not is_windows)
-            except ValueError:
-                continue
-            for index, token in enumerate(tokens[:-2]):
-                if Path(token).name == "hermes" and tokens[index + 1] in {"-p", "--profile"}:
-                    canon = tokens[index + 2]
-                    break
-            if canon:
-                break
+        canon = extract_profile_from_wrapper(content, is_windows=is_windows)
         if not canon:
             continue
         canon = normalize_profile_name(canon)
