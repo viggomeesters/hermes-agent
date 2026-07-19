@@ -340,6 +340,71 @@ def test_preflight_drops_interrupted_function_calls_without_outputs():
     ]
 
 
+def test_preflight_drops_orphaned_function_outputs_without_calls():
+    result = _preflight_codex_api_kwargs({
+        "model": "gpt-5.6-sol",
+        "instructions": "help",
+        "input": [
+            {"role": "user", "content": "before"},
+            {
+                "type": "function_call_output",
+                "call_id": "call_missing",
+                "output": "result without preserved call",
+            },
+            {"role": "user", "content": "after"},
+        ],
+        "store": False,
+    })
+
+    assert result["input"] == [
+        {"role": "user", "content": "before"},
+        {"role": "user", "content": "after"},
+    ]
+
+
+def test_preflight_preserves_completed_subset_of_partial_parallel_call_block():
+    result = _preflight_codex_api_kwargs({
+        "model": "gpt-5.6-sol",
+        "instructions": "help",
+        "input": [
+            {
+                "type": "function_call",
+                "call_id": "call_completed",
+                "name": "terminal",
+                "arguments": '{"command":"true"}',
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_interrupted",
+                "name": "delegate_task",
+                "arguments": '{"goal":"review"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_completed",
+                "output": '{"exit_code":0}',
+            },
+            {"role": "user", "content": "Hervat"},
+        ],
+        "store": False,
+    })
+
+    assert result["input"] == [
+        {
+            "type": "function_call",
+            "call_id": "call_completed",
+            "name": "terminal",
+            "arguments": '{"command":"true"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_completed",
+            "output": '{"exit_code":0}',
+        },
+        {"role": "user", "content": "Hervat"},
+    ]
+
+
 def test_canonical_codex_output_preserves_wire_order_namespace_and_citations():
     ordered = [
         {
