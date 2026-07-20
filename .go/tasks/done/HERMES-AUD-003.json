@@ -4,7 +4,7 @@
   "execution_mode": "mechanical",
   "id": "HERMES-AUD-003",
   "project": "hermes-agent",
-  "status": "open",
+  "status": "done",
   "summary": "Retire the Zippy profile without leaving fleet drift",
   "description": "Zippy is a dedicated Telegram vault profile with a unique bot token, its own always-on systemd gateway, 223 copied skills, codebase-memory MCP, one routing entry, 27 stored sessions and no Telegram activity since 2026-07-15. It is still hard-coded into the Bertus overlay fleet policy, queue policy, watchdog cron, reload scripts and systemd enablement. Decommission it reversibly rather than deleting a directory and leaving noisy red monitors.",
   "scope": {
@@ -31,8 +31,14 @@
     "python3 ~/github/bertus-agent-stack/scripts/profile_fleet_audit.py && python3 ~/github/bertus-agent-stack/scripts/validate_queue_policy.py && systemctl --user is-enabled hermes-gateway-zippy.service >/dev/null 2>&1; test 0 -ne 0"
   ],
   "claim": {
-    "agent": null,
-    "claimed_at": null
+    "agent": "hermes",
+    "claimed_at": "2026-07-20T09:08:42+02:00"
   },
-  "evidence": []
+  "evidence": [
+    {
+      "created_at": "2026-07-20T12:10:23+02:00",
+      "agent": "hermes",
+      "summary": "Rollback archive checksums OK at ~/.hermes/backups/zippy-retirement/20260720T090919+0200; zippy service inactive/dead and disabled with MainPID=0; alias absent; no zippy references in active cron/scripts; fleet audit 47 GREEN/0 RED; queue policy 22 checks GREEN; overlay tests 9 passed; bertus-agent-stack commit 1d63515 pushed and aligned 0/0; default vault skill remains available; live profile/archive retained for explicit later deletion."
+    }
+  ]
 }
