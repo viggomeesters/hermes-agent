@@ -143,17 +143,14 @@ async def test_gateway_stop_systemd_service_restart_uses_tempfail(tmp_path, monk
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     monkeypatch.setenv("INVOCATION_ID", "systemd-test")
-    runner._launch_systemd_restart_shortcut = MagicMock()
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
         await runner.stop(restart=True, service_restart=True)
 
-    runner._launch_systemd_restart_shortcut.assert_called_once_with()
-    # Exit 75 (EX_TEMPFAIL) so RestartForceExitStatus=75 in the unit
-    # file revives the gateway via Restart=on-failure, even when the
-    # planned-restart helper fails (Polkit denial, missing user bus,
-    # headless box, or operator-managed unit using on-failure instead
-    # of always).  StartLimitBurst still bounds accidental loops.
+    # Exit 75 (EX_TEMPFAIL) makes the service manager the single restart
+    # owner.  Restart=always/on-failure already revives the unit, and
+    # RestartForceExitStatus=75 covers generated units without a second
+    # transient helper racing into another stop/start cycle.
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
     assert (tmp_path / ".restart_pending.json").exists()
 
@@ -255,7 +252,6 @@ async def test_in_chat_restart_does_not_write_home_startup_marker(tmp_path, monk
     source = make_restart_source(thread_id="42")
     source.message_id = "restart-command"
     runner._restart_command_source = source
-    runner._launch_systemd_restart_shortcut = MagicMock()
     monkeypatch.setenv("INVOCATION_ID", "systemd-test")
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
@@ -446,7 +442,6 @@ async def test_signal_initiated_restart_still_persists_stopped(tmp_path, monkeyp
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     runner._signal_initiated_shutdown = True
-    runner._launch_systemd_restart_shortcut = MagicMock()
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
         await runner.stop(restart=True, service_restart=True)
