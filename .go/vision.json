@@ -1,0 +1,24 @@
+{
+  "schema": "go-workflow.repo-local.vision.v1",
+  "kind": "vision",
+  "project": "hermes-agent",
+  "status": "active",
+  "north_star": "A trustworthy self-improving AI agent that runs consistently across terminal, messaging, desktop, and remote environments.",
+  "wedge": "One provider-agnostic agent runtime with durable skills, memory, tools, profiles, and messaging gateways.",
+  "target_user": "Developers and operators who want an autonomous agent they control across local and hosted environments.",
+  "core_promise": "Hermes can understand, execute, verify, and learn from real work without locking the user to one model provider or platform.",
+  "product_principles": [
+    "Preserve prompt-cache stability and strict message-role alternation.",
+    "Keep the core narrow; expand capabilities through existing abstractions, CLI, skills, plugins, and MCP.",
+    "Prefer real end-to-end proof over mock-only confidence."
+  ],
+  "non_goals": [
+    "Coupling otherwise isolated profiles through implicit shared state.",
+    "Adding speculative core tools or extension hooks without a concrete consumer.",
+    "Outbound telemetry or attribution without explicit opt-in."
+  ],
+  "success_metrics": [
+    "Canonical local verification passes for every finished task.",
+    "Prompt caching, role alternation, profile isolation, and security boundaries remain intact."
+  ]
+}

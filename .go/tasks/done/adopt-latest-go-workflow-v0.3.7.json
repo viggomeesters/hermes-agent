@@ -1,0 +1,52 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "adopt-latest-go-workflow-v0.3.7",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Adopt latest immutable .go workflow in Hermes Agent",
+  "description": "R1 Verify v0.3.7 as the latest official immutable go-workflow-stack release and pin resolved commit 307672f443d1b9297315fd17cce9704fc06b7fd2. R2 Materialize a project-specific canonical .go contract. R3 Add a repo-local launcher/bootstrap path that resolves only the pinned release. R4 Route agent execution instructions through .go as the sole workflow SSOT. R5 Exercise task create, claim, evidence, finish, status, and readback on the real repository. R6 Validate provenance, contract, shell syntax, agent compatibility, and repository diff before finish; commit/push/clean alignment follows the mandated post-finish ship sequence.",
+  "scope": {
+    "read": [
+      "AGENTS.md",
+      "README.md",
+      "pyproject.toml"
+    ],
+    "modify": [
+      ".go/**",
+      "AGENTS.md",
+      "go",
+      "scripts/bootstrap-go-workflow-stack.sh",
+      "scripts/validate-go.sh"
+    ]
+  },
+  "acceptance": [
+    "R1: .go/project.json pins required_stack_version 0.3.7 and stack_ref v0.3.7; doctor proves pep610-vcs, pinned commit 307672f443d1b9297315fd17cce9704fc06b7fd2, exact_ref=true, development_override=false, compatible=true.",
+    "R2: .go contains project-specific vision, architecture principles, hierarchy, JSON tasks, decisions, runs, and evidence as the canonical repo-local source of truth.",
+    "R3: ./go and scripts/bootstrap-go-workflow-stack.sh resolve the stack from .go/project.json, reject mutable ref overrides, and fail closed on a mismatched explicit checkout.",
+    "R4: AGENTS.md tells agents to validate, create/claim a task before product edits, stay within scope, verify, finish with evidence, and never create a parallel workflow queue.",
+    "R5: The adoption task is claimed and finished through the installed released runtime, with outcome evidence recorded for every R1-R6.",
+    "R6: go-workflow doctor/validate/status/readback, ./go doctor, agent compatibility, shell syntax, fail-closed override probes, and git diff --check all pass before finish; commit, push, and ahead/behind 0/0 are then proven in the post-finish ship sequence."
+  ],
+  "verification": [
+    "go-workflow doctor . --json",
+    "go-workflow validate .",
+    "go-workflow status . --json",
+    "go-workflow readback .",
+    "./go doctor . --json",
+    "bash -n go scripts/bootstrap-go-workflow-stack.sh scripts/validate-go.sh",
+    "git diff --check"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-07-20T08:13:18+02:00"
+  },
+  "evidence": [
+    {
+      "created_at": "2026-07-20T08:16:43+02:00",
+      "agent": "hermes",
+      "summary": "R1 verified: GitHub latest release v0.3.7 published 2026-07-18, annotated tag resolves to commit 307672f443d1b9297315fd17cce9704fc06b7fd2; installed doctor identity_source=pep610-vcs exact_ref=true development_override=false compatible=true. R2 verified: project-specific .go project/vision/principles/hierarchy/tasks/decisions/runs/evidence validate and JSON/JSONL parse. R3 verified: ./go resolves clean managed cache v0.3.7 at exact commit; GO_STACK_REF override exits 5 and mismatched explicit GO_STACK exits 4. R4 verified: AGENTS.md declares .go sole SSOT and task-first claim/scope/verify/finish lifecycle. R5 verified by real create, claim, decision, validation, and this finish transition. R6 verified: installed and repo-local doctor ready=true; validate/status/readback and Hermes agent-check pass; bash -n and git diff --check pass. Release shape: internal fork workflow contract, no runtime restart or public release needed. Rollback: revert the ship commit."
+    }
+  ]
+}

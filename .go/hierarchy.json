@@ -1,0 +1,60 @@
+{
+  "schema": "go-workflow.repo-local.hierarchy.v1",
+  "kind": "hierarchy",
+  "project": "hermes-agent",
+  "epics": [
+    {
+      "id": "core-runtime",
+      "title": "Core agent runtime",
+      "features": [
+        {
+          "id": "conversation-loop",
+          "title": "Conversation loop and provider routing",
+          "tasks": []
+        },
+        {
+          "id": "tools-and-skills",
+          "title": "Tools, skills, memory, and delegation",
+          "tasks": []
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "gateway",
+      "title": "Messaging gateway",
+      "features": [
+        {
+          "id": "platform-adapters",
+          "title": "Messaging platform adapters and delivery",
+          "tasks": []
+        },
+        {
+          "id": "automation",
+          "title": "Cron, webhooks, queueing, and durable automation",
+          "tasks": []
+        }
+      ],
+      "tasks": []
+    },
+    {
+      "id": "developer-experience",
+      "title": "Developer experience",
+      "features": [
+        {
+          "id": "cli-desktop",
+          "title": "CLI, TUI, desktop, setup, and diagnostics",
+          "tasks": []
+        },
+        {
+          "id": "quality",
+          "title": "Testing, packaging, documentation, and release quality",
+          "tasks": []
+        }
+      ],
+      "tasks": [
+        "adopt-latest-go-workflow-v0.3.7"
+      ]
+    }
+  ]
+}

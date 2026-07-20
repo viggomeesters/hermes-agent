@@ -1,0 +1,1 @@
+{"schema": "go-workflow.repo-local.event.v1", "kind": "event", "event": "task.claimed", "created_at": "2026-07-20T08:13:18+02:00", "task_id": "adopt-latest-go-workflow-v0.3.7", "agent": "hermes", "data": {"report_only_dirty": []}}

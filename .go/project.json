@@ -1,0 +1,17 @@
+{
+  "schema": "go-workflow.repo-local.project.v1",
+  "kind": "project",
+  "id": "hermes-agent",
+  "name": "Hermes Agent",
+  "source_of_truth": "repo-local",
+  "contract_version": 2,
+  "project_mode": "project",
+  "required_stack_version": "0.3.7",
+  "stack_ref": "v0.3.7",
+  "default_verification": [
+    "scripts/run_tests.sh"
+  ],
+  "links": {
+    "repo": "https://github.com/NousResearch/hermes-agent"
+  }
+}

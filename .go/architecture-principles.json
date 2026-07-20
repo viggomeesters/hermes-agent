@@ -1,0 +1,31 @@
+{
+  "schema": "go-workflow.repo-local.architecture-principles.v1",
+  "kind": "architecture_principles",
+  "project": "hermes-agent",
+  "principles": [
+    {
+      "id": "cache-stability",
+      "statement": "Conversation context remains byte-stable except for explicit compression.",
+      "rationale": "Prompt-cache reuse is a core cost and correctness invariant.",
+      "enforcement": "Tests and review reject mid-conversation system prompt or tool-schema mutation."
+    },
+    {
+      "id": "narrow-core",
+      "statement": "New capability uses the least permanent core footprint that solves the need.",
+      "rationale": "Every core tool schema is paid on every model request.",
+      "enforcement": "Review applies the footprint ladder before accepting new core surface."
+    },
+    {
+      "id": "behavior-proof",
+      "statement": "Changes are proven through behavior contracts and representative end-to-end paths.",
+      "rationale": "Mocks alone hide resolution, configuration, security, and I/O failures.",
+      "enforcement": "Task verification includes focused regression tests and relevant integration smoke."
+    },
+    {
+      "id": "profile-isolation",
+      "statement": "Profiles remain independent runtime and configuration islands.",
+      "rationale": "Implicit inheritance creates hidden coupling and cross-profile regressions.",
+      "enforcement": "Profile-aware paths use the active HERMES_HOME and tests cover isolation."
+    }
+  ]
+}

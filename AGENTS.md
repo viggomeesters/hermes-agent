@@ -4,6 +4,28 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Repository-local `.go` workflow
+
+This repository uses the JSON/JSONL-first `.go/` contract as its sole durable
+agent-workflow source of truth. Do not create or revive `.go-workflow/`, a
+vault task queue, or another parallel execution ledger.
+
+Before editing product files:
+
+1. Run `bash scripts/validate-go.sh` and `./go status . --json`.
+2. Read `.go/vision.json`, `.go/architecture-principles.json`,
+   `.go/hierarchy.json`, and the selected task JSON.
+3. Materialize new user intent as explicit requested outcomes in a concrete
+   `.go/tasks/open/*.json` task, then claim exactly one task.
+4. Stay within the claimed task's `scope.modify`; preserve unrelated changes.
+5. Run the task verification plus the repository checks required by this guide.
+6. Record outcome-by-outcome evidence and finish the task through `./go finish`.
+
+The project pins `go-workflow-stack` in `.go/project.json`. Use the repo-local
+`./go` launcher so a fresh clone resolves that immutable tag. `GO_STACK` is an
+explicit local checkout override only; it must match the pinned ref exactly
+unless `GO_STACK_ALLOW_DEV=1` is deliberately set while developing the stack.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
