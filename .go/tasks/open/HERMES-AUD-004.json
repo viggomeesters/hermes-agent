@@ -1,0 +1,36 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "HERMES-AUD-004",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Bound diagnostics and clean production session state",
+  "description": "hermes doctor did not finish within 90 seconds. The production state.db is 6.46 GB with 3150 sessions, 407718 messages and 252 rows still open; gateway_routing also contains pytest temporary scopes. sessions.retention_days is 90 but auto_prune is disabled. Diagnostics and maintenance must be bounded and must never let tests write into the live store.",
+  "scope": {
+    "read": [
+      "hermes_cli/**",
+      "hermes_state.py",
+      "gateway/session.py",
+      "tests/**"
+    ],
+    "modify": [
+      "hermes_cli/**",
+      "hermes_state.py",
+      "gateway/session.py",
+      "tests/**",
+      "website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 hermes doctor completes within a documented bounded timeout while a live gateway owns state.db and identifies the slow probe; R2 every SQLite diagnostic uses short busy timeouts and reports locked/degraded rather than hanging; R3 tests cannot resolve HERMES_HOME or routing scope into ~/.hermes; R4 a safe maintenance command classifies and removes invalid test routing rows, closes genuinely stale open sessions, applies the configured retention policy, and preserves active leases plus transcript backups; R5 before/after counts, DB size, elapsed time and rollback evidence are emitted."
+  ],
+  "verification": [
+    "python3 -m pytest tests/hermes_cli tests/gateway -q && timeout 60 hermes doctor && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

@@ -1,0 +1,39 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "HERMES-AUD-001",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Make gateway restarts singleton and prove day-long reliability",
+  "description": "Audit evidence from 2026-07-19 shows every planned /restart can produce two immediate systemd restart cycles: exit status 75 already triggers RestartForceExitStatus while a transient planned-restart helper also calls systemctl restart. The default gateway also reached 22.1 GiB cgroup peak during heavy child workloads. Reconcile restart ownership, preserve graceful drain, correlate watchdog causes, and produce a bounded soak instead of relying on green process state.",
+  "scope": {
+    "read": [
+      "gateway/run.py",
+      "gateway/restart.py",
+      "hermes_cli/gateway.py",
+      "tests/gateway/**",
+      "~/.config/systemd/user/hermes-gateway*.service*",
+      "~/.hermes/scripts/hermes_*watchdog.py"
+    ],
+    "modify": [
+      "gateway/run.py",
+      "gateway/restart.py",
+      "hermes_cli/gateway.py",
+      "tests/gateway/**",
+      "tests/hermes_cli/**",
+      "website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 one /restart request causes exactly one stop/start transition under user systemd; R2 graceful drain and restart-loop protection remain intact; R3 watchdog-triggered restarts record one machine-readable reason and cannot race or stack; R4 a 24-hour soak records PID lineage, restart count, Telegram heartbeat, provider/pool/pair-integrity errors, anon memory, tasks, and OOM events; R5 no unexplained restart, pool exhaustion, pair-integrity error, Telegram conflict, or OOM occurs during the soak."
+  ],
+  "verification": [
+    "python3 -m pytest tests/gateway tests/hermes_cli -q && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

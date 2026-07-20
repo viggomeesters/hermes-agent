@@ -1,0 +1,36 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "HERMES-AUD-006",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Make gateway health state truthful and resource-aware",
+  "description": "The live gateway is healthy now, but gateway_state.json still advertises a stale Feishu connected state from 2026-07-16 although the current default setup reports Telegram and Email. Status calls show 45 active sessions while state.db has 252 open rows, and cgroup MemoryCurrent includes several GiB of reclaimable file cache plus heavy child builds. Health output needs precise semantics instead of green-but-misleading counters.",
+  "scope": {
+    "read": [
+      "gateway/**",
+      "hermes_cli/**",
+      "tests/gateway/**",
+      "tests/hermes_cli/**"
+    ],
+    "modify": [
+      "gateway/**",
+      "hermes_cli/**",
+      "tests/gateway/**",
+      "tests/hermes_cli/**",
+      "website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 gateway startup replaces or expires stale platform states so only platforms loaded by the current PID can be connected; R2 status labels routing entries, open transcript rows, live leases and active agents separately; R3 resource status splits anonymous memory, reclaimable file cache, task count and heavy child RSS; R4 watchdog and status evidence share one timestamped PID generation; R5 tests cover stale state after restart, multi-profile status, child-heavy workloads and misleading open-session counts."
+  ],
+  "verification": [
+    "python3 -m pytest tests/gateway tests/hermes_cli -q && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

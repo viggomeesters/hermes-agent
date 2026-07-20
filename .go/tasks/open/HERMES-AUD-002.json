@@ -1,0 +1,39 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "HERMES-AUD-002",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Close the Telegram topic and session lifecycle gap",
+  "description": "Closing or deleting a Telegram DM topic is not currently treated as a Hermes session-close event. The live state has 467 telegram_dm_topic_bindings, 46 open Telegram session rows, and post-restart media sends still fail with Message thread not found. Existing text/control fallback is partial and the daily stale cleanup only evicts routes after three idle days.",
+  "scope": {
+    "read": [
+      "plugins/platforms/telegram/adapter.py",
+      "gateway/session.py",
+      "hermes_state.py",
+      "tests/plugins/telegram/**",
+      "tests/gateway/**",
+      "~/.hermes/scripts/hermes_close_stale_sessions.py"
+    ],
+    "modify": [
+      "plugins/platforms/telegram/adapter.py",
+      "gateway/session.py",
+      "hermes_state.py",
+      "tests/plugins/telegram/**",
+      "tests/gateway/**",
+      "website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 Telegram topic closed/deleted service updates prune the binding and end or detach the routed session without deleting transcript history; R2 every send path including text, control, photo, document, rich draft, cron and synthetic sends falls back safely when a thread no longer exists; R3 successful fallback prunes stale topic and routing rows so the error does not repeat; R4 the user has an explicit /close or equivalent immediate session-close path where Telegram emits no usable close event; R5 tests cover closed topics, deleted topics, media fallback, stale binding cleanup, topic reuse, and transcript preservation."
+  ],
+  "verification": [
+    "python3 -m pytest tests/plugins/telegram tests/gateway -q && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

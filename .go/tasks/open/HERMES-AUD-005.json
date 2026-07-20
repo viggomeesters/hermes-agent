@@ -1,0 +1,39 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "HERMES-AUD-005",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Clear enabled-red cron jobs and stale Telegram delivery targets",
+  "description": "The scheduler is alive with 38 active jobs, but enabled jobs are red: Luca Recruiter exits 1 and Hermes nightly upgrade train blocks at behind=1380. Multiple otherwise-green jobs retain dead Telegram thread IDs and fall back noisily. One paused JSONL ingest remains correctly fail-closed on ledger_runtime_head_mismatch and must stay separately visible.",
+  "scope": {
+    "read": [
+      "cron/**",
+      "~/.hermes/cron/jobs.json",
+      "~/.hermes/scripts/cron_fleet_health_audit.py",
+      "~/.hermes/scripts/hermes_upgrade_train_nightly.sh",
+      "~/.hermes/scripts/luca_recruiter_daily_scan.sh"
+    ],
+    "modify": [
+      "cron/**",
+      "tests/cron/**",
+      "~/.hermes/cron/jobs.json",
+      "~/.hermes/scripts/cron_fleet_health_audit.py",
+      "~/.hermes/scripts/hermes_upgrade_train_nightly.sh",
+      "~/.hermes/scripts/luca_recruiter_daily_scan.sh",
+      "website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 enabled non-green jobs are repaired, intentionally paused with an owner/reason, or moved to their owning repository; R2 dead Telegram thread destinations are pruned after fallback and no longer produce repeated delivery warnings; R3 nightly upgrade train distinguishes expected large fork divergence from actionable upgrade risk and stops emitting the same unresolvable red every night; R4 paused ledger-integrity work remains fail-closed and explicitly reported; R5 a fresh fleet audit reports active_non_green=0 and lists any paused-red jobs separately."
+  ],
+  "verification": [
+    "python3 -m pytest tests/cron -q && python3 ~/.hermes/scripts/cron_fleet_health_audit.py && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

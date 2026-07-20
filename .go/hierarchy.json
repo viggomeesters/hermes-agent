@@ -27,12 +27,19 @@
         {
           "id": "platform-adapters",
           "title": "Messaging platform adapters and delivery",
-          "tasks": []
+          "tasks": [
+            "HERMES-AUD-002"
+          ]
         },
         {
           "id": "automation",
           "title": "Cron, webhooks, queueing, and durable automation",
-          "tasks": []
+          "tasks": [
+            "HERMES-AUD-001",
+            "HERMES-AUD-003",
+            "HERMES-AUD-005",
+            "HERMES-AUD-006"
+          ]
         }
       ],
       "tasks": []
@@ -44,7 +51,9 @@
         {
           "id": "cli-desktop",
           "title": "CLI, TUI, desktop, setup, and diagnostics",
-          "tasks": []
+          "tasks": [
+            "HERMES-AUD-004"
+          ]
         },
         {
           "id": "quality",

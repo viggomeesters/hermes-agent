@@ -1,0 +1,38 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "HERMES-AUD-003",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Retire the Zippy profile without leaving fleet drift",
+  "description": "Zippy is a dedicated Telegram vault profile with a unique bot token, its own always-on systemd gateway, 223 copied skills, codebase-memory MCP, one routing entry, 27 stored sessions and no Telegram activity since 2026-07-15. It is still hard-coded into the Bertus overlay fleet policy, queue policy, watchdog cron, reload scripts and systemd enablement. Decommission it reversibly rather than deleting a directory and leaving noisy red monitors.",
+  "scope": {
+    "read": [
+      "~/.hermes/profiles/zippy/**",
+      "~/.config/systemd/user/hermes-gateway-zippy.service",
+      "~/.hermes/cron/jobs.json",
+      "~/github/bertus-agent-stack/**"
+    ],
+    "modify": [
+      "~/.hermes/profiles/zippy/**",
+      "~/.config/systemd/user/hermes-gateway-zippy.service",
+      "~/.config/systemd/user/default.target.wants/hermes-gateway-zippy.service",
+      "~/.local/bin/zippy",
+      "~/.hermes/cron/jobs.json",
+      "~/.hermes/scripts/**",
+      "~/github/bertus-agent-stack/**"
+    ]
+  },
+  "acceptance": [
+    "R1 export a rollback archive and sanitized dependency inventory before shutdown; R2 stop and disable the Zippy gateway and remove duplicate poller risk without exposing or destroying the bot token; R3 remove Zippy from fleet/queue policies, watchdog expectations, reload scripts and cron prompts; R4 retain vault lookup capability through default Hermes or a documented on-demand path; R5 profile fleet audit, queue policy validation, cron health and systemd readback are green with Zippy absent; R6 deletion of the archived profile/token is a separate explicit decision, not part of this task."
+  ],
+  "verification": [
+    "python3 ~/github/bertus-agent-stack/scripts/profile_fleet_audit.py && python3 ~/github/bertus-agent-stack/scripts/validate_queue_policy.py && systemctl --user is-enabled hermes-gateway-zippy.service >/dev/null 2>&1; test 0 -ne 0"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}
