@@ -1153,9 +1153,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 reset_media()
             retry_kwargs = dict(send_kwargs)
             retry_kwargs["reply_to_message_id"] = None
+            stale_thread_id = (
+                send_kwargs.get("message_thread_id")
+                or self._metadata_thread_id(metadata)
+                or self._metadata_direct_messages_topic_id(metadata)
+            )
             retry_kwargs.pop("message_thread_id", None)
             retry_kwargs.pop("direct_messages_topic_id", None)
-            return await send_fn(**retry_kwargs)
+            result = await send_fn(**retry_kwargs)
+            self._prune_stale_dm_topic_binding(
+                send_kwargs.get("chat_id"), stale_thread_id,
+            )
+            return result
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""

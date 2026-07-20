@@ -6044,6 +6044,13 @@ class SessionDB:
 
         def _do(conn):
             try:
+                binding = conn.execute(
+                    """
+                    SELECT session_id FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? AND thread_id = ?
+                    """,
+                    (chat_id, thread_id),
+                ).fetchone()
                 cursor = conn.execute(
                     """
                     DELETE FROM telegram_dm_topic_bindings
@@ -6058,6 +6065,12 @@ class SessionDB:
                 return
             if not deleted["count"]:
                 return
+            if binding and binding["session_id"]:
+                conn.execute(
+                    "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                    "WHERE id = ? AND ended_at IS NULL",
+                    (time.time(), "telegram_topic_closed", str(binding["session_id"])),
+                )
             # If that was the chat's last binding, disable topic mode for
             # the chat so recovery stops steering lobby messages at a now
             # empty lane set. Same transaction → no read-after-prune race.

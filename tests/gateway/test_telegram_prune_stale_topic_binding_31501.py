@@ -78,6 +78,22 @@ class TestDeleteTelegramTopicBinding:
         assert db.get_telegram_topic_binding(
             chat_id="5595856929", thread_id="15287",
         ) is None
+        ended = db.get_session("sess-target")
+        assert ended["end_reason"] == "telegram_topic_closed"
+        assert ended["ended_at"] is not None
+        db.close()
+
+    def test_preserves_transcript_when_binding_is_pruned(self, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        _seed_binding(db, session_id="sess-with-history")
+        db.append_message("sess-with-history", "user", "keep me")
+
+        db.delete_telegram_topic_binding(
+            chat_id="5595856929", thread_id="15287",
+        )
+
+        messages = db.get_messages("sess-with-history")
+        assert [message["content"] for message in messages] == ["keep me"]
         db.close()
 
     def test_does_not_touch_unrelated_bindings(self, tmp_path):
@@ -303,6 +319,42 @@ class TestPruneStaleDmTopicBindingHelper:
         assert db.get_telegram_topic_binding(
             chat_id="5595856929", thread_id="15287",
         ) is not None
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_media_fallback_prunes_binding_and_ends_session(self, tmp_path):
+        class BadRequest(Exception):
+            pass
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        _seed_binding(db, thread_id="15287")
+        adapter = _bare_adapter(db)
+        calls = []
+
+        async def send_fn(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise BadRequest("Message thread not found")
+            return SimpleNamespace(message_id=1)
+
+        result = await adapter._send_with_dm_topic_reply_anchor_retry(
+            send_fn,
+            {"chat_id": 5595856929, "message_thread_id": 15287},
+            {
+                "telegram_dm_topic_reply_fallback": True,
+                "thread_id": "15287",
+                "direct_messages_topic_id": "15287",
+            },
+            None,
+            "photo",
+        )
+
+        assert result.message_id == 1
+        assert "message_thread_id" not in calls[1]
+        assert db.get_telegram_topic_binding(
+            chat_id="5595856929", thread_id="15287",
+        ) is None
+        assert db.get_session("sess-target")["end_reason"] == "telegram_topic_closed"
         db.close()
 
 
