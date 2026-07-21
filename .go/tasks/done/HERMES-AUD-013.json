@@ -1,0 +1,35 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "id": "HERMES-AUD-013",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Remove unrenderable OpenAI citation tokens from chat delivery",
+  "description": "Production replies leak private citation transport markers such as citeturn3search0turn3search1 into Telegram because the Codex final text contains symbolic source references without URL annotations. Human-facing gateways must never display renderer-internal tokens; raw/local/API surfaces retain source text for diagnostics.",
+  "scope": {
+    "read": [
+      "gateway/run.py,tests/gateway/test_telegram_noise_filter.py,agent/codex_responses_adapter.py,tests/agent/test_codex_responses_adapter.py"
+    ],
+    "modify": [
+      "gateway/run.py,tests/gateway/test_telegram_noise_filter.py"
+    ]
+  },
+  "acceptance": [
+    "R1 Telegram and every human chat surface remove complete citation transport markers; R2 surrounding punctuation and whitespace remain natural; R3 malformed or partial markers fail safely without deleting normal prose; R4 local/API/webhook surfaces remain byte-identical; R5 real Bosch incident phrase is a regression fixture."
+  ],
+  "verification": [
+    "scripts/run_tests.sh tests/gateway/test_telegram_noise_filter.py -q && git diff --check"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-07-21T18:15:15+02:00"
+  },
+  "evidence": [
+    {
+      "created_at": "2026-07-21T18:19:00+02:00",
+      "agent": "hermes",
+      "summary": "RED: exact Bosch citation regression failed on 15 chat surfaces; GREEN: 230 focused tests passed; gateway regression suite: 320 passed; git diff --check and py_compile passed; .go validation passed"
+    }
+  ]
+}
