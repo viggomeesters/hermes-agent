@@ -36,6 +36,24 @@ def _build_healthy_db(db_path: Path) -> str:
     return sid
 
 
+def test_pytest_refuses_explicit_live_state_path():
+    live_db = Path.home() / ".hermes" / "state.db"
+    with pytest.raises(RuntimeError, match="refused access"):
+        SessionDB(db_path=live_db)
+
+
+def test_pytest_refuses_symlink_alias_to_live_state(tmp_path):
+    alias = tmp_path / "live-hermes"
+    alias.symlink_to(Path.home() / ".hermes", target_is_directory=True)
+    with pytest.raises(RuntimeError, match="refused access"):
+        SessionDB(db_path=alias / "state.db")
+
+
+def test_pytest_refuses_read_only_live_state_too():
+    with pytest.raises(RuntimeError, match="refused access"):
+        SessionDB(db_path=Path.home() / ".hermes" / "state.db", read_only=True)
+
+
 def _corrupt_duplicate_fts(db_path: Path) -> None:
     """Inject a duplicate messages_fts row into sqlite_master.
 
@@ -317,6 +335,94 @@ def test_write_health_probe_fails_fast_when_database_is_busy(tmp_path):
     assert reason is not None
     assert "locked" in reason.lower()
     assert elapsed < 2.0
+
+
+def test_write_health_probe_bounds_large_integrity_scan(tmp_path):
+    """Diagnostic callers can cap integrity_check work without false corruption."""
+    import time
+
+    from hermes_state import _db_opens_cleanly
+
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        # Ensure the VM executes enough opcodes for the progress handler to run.
+        conn.executemany(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES ((SELECT id FROM sessions LIMIT 1), 'user', ?, ?)",
+            [(f"bounded diagnostic row {i}", time.time()) for i in range(2_000)],
+        )
+    finally:
+        conn.close()
+
+    started = time.monotonic()
+    reason = _db_opens_cleanly(db_path, max_seconds=0.0)
+    elapsed = time.monotonic() - started
+
+    assert reason == "diagnostic timeout after 0s"
+    assert elapsed < 1.0
+
+
+def test_session_maintenance_preserves_leases_and_writes_rollback_evidence(tmp_path):
+    """Maintenance removes test leaks but never closes a routed live session."""
+    import json
+    import time
+
+    db_path = tmp_path / "state.db"
+    stale_id = _build_healthy_db(db_path)
+    db = SessionDB(db_path=db_path)
+    leased_id = db.create_session(session_id="leased-session", source="telegram")
+    expired_id = db.create_session(session_id="expired-session", source="cli")
+    db.append_message(expired_id, role="user", content="must be backed up")
+    db.end_session(expired_id, "completed")
+    old = time.time() - 120 * 86400
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ? WHERE id IN (?, ?)",
+        (old, stale_id, leased_id),
+    )
+    db._conn.execute(
+        "UPDATE messages SET timestamp = ? WHERE session_id = ?", (old, stale_id)
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+        (old, old, expired_id),
+    )
+    db._conn.commit()
+    db.save_gateway_routing_entry(
+        "agent:main:telegram:dm:1",
+        json.dumps({"session_id": leased_id}),
+        scope="/home/example/.hermes/sessions",
+    )
+    db.save_gateway_routing_entry(
+        "pytest-leak",
+        json.dumps({"session_id": stale_id}),
+        scope="/tmp/pytest-of-viggo/pytest-1/sessions",
+    )
+
+    plan = db.plan_session_maintenance(stale_after_hours=24, retention_days=90)
+    assert stale_id in plan["stale_open_session_ids"]
+    assert leased_id not in plan["stale_open_session_ids"]
+    assert expired_id in plan["retention_session_ids"]
+    assert len(plan["invalid_routing_keys"]) == 1
+
+    report = db.apply_session_maintenance(
+        backup_dir=tmp_path / "backups",
+        stale_after_hours=24,
+        retention_days=90,
+    )
+    assert report["applied"] == {
+        "invalid_routing_removed": 1,
+        "stale_open_closed": 1,
+        "retention_sessions_removed": 1,
+    }
+    assert db.get_session(leased_id)["ended_at"] is None
+    assert db.get_session(stale_id)["end_reason"] == "maintenance_stale"
+    assert db.get_session(expired_id) is None
+    assert Path(report["rollback"]["transcript_backup"]).read_text().count("\n") == 1
+    assert Path(report["rollback"]["manifest"]).exists()
+    assert report["after"]["invalid_routing_keys"] == []
+    db.close()
 
 
 def test_fts_write_corruption_repaired_in_place(tmp_path):

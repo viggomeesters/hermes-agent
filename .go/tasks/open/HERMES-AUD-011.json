@@ -1,0 +1,29 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "id": "HERMES-AUD-011",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Audit and safely compact SQLite FTS and WAL storage",
+  "description": "Explain the multi-gigabyte state.db footprint by measuring base tables, FTS shadow tables, freelist, WAL and bytes per message, then provide a maintenance-window compaction workflow with space and downtime guards.",
+  "scope": {
+    "read": [
+      "hermes_state.py,hermes_cli/**,tests/**,website/docs/**"
+    ],
+    "modify": [
+      "hermes_state.py,hermes_cli/**,tests/**,website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 report attributes bytes by table/index/WAL/freelist; R2 optimize checkpoint and vacuum are separately benchmarked; R3 compaction refuses insufficient free space or a live writer unless explicitly maintenance-gated; R4 before/after size search latency and integrity evidence are emitted; R5 rollback and backup instructions are verified."
+  ],
+  "verification": [
+    "scripts/run_tests.sh tests/hermes_cli -q && timeout 60 hermes sessions stats && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

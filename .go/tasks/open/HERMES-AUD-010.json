@@ -1,0 +1,29 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "id": "HERMES-AUD-010",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Automate bounded session maintenance with evidence",
+  "description": "Run cheap periodic classification for leaked routes, expired leases, stale opens, retention candidates and WAL growth, with fail-safe mutation boundaries and machine-readable evidence.",
+  "scope": {
+    "read": [
+      "hermes_state.py,gateway/**,hermes_cli/**,tests/**"
+    ],
+    "modify": [
+      "hermes_state.py,gateway/**,hermes_cli/**,tests/**,website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 classification is bounded and non-blocking; R2 only unambiguous test leaks and expired leases may auto-mutate; R3 transcript deletion requires backup manifest hashes and readback; R4 reports before classified protected applied after elapsed and gateway identity; R5 repeated runs are idempotent."
+  ],
+  "verification": [
+    "scripts/run_tests.sh tests/hermes_cli tests/gateway -q && timeout 60 hermes sessions maintain && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

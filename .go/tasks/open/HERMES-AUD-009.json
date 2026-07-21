@@ -1,0 +1,29 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "id": "HERMES-AUD-009",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Close Telegram sessions through explicit lifecycle events",
+  "description": "Map Telegram reset, topic close/delete, resume, normal gateway shutdown and lease expiry to truthful session, routing and lease state without deleting transcripts.",
+  "scope": {
+    "read": [
+      "gateway/platforms/telegram.py,gateway/session.py,gateway/**,hermes_state.py,tests/**"
+    ],
+    "modify": [
+      "gateway/platforms/telegram.py,gateway/session.py,gateway/**,hermes_state.py,tests/**,website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 reset closes the old session before creating the next; R2 topic close/delete removes or suspends routing and preserves transcript; R3 shutdown releases leases and crash relies on expiry; R4 end_reason values are explicit and stable; R5 Telegram lifecycle E2E tests prove reopen/resume behavior."
+  ],
+  "verification": [
+    "scripts/run_tests.sh tests/gateway/test_session.py tests/gateway -q && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}

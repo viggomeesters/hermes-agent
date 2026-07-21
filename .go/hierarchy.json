@@ -28,7 +28,8 @@
           "id": "platform-adapters",
           "title": "Messaging platform adapters and delivery",
           "tasks": [
-            "HERMES-AUD-002"
+            "HERMES-AUD-002",
+            "HERMES-AUD-009"
           ]
         },
         {
@@ -38,7 +39,9 @@
             "HERMES-AUD-001",
             "HERMES-AUD-003",
             "HERMES-AUD-005",
-            "HERMES-AUD-006"
+            "HERMES-AUD-006",
+            "HERMES-AUD-008",
+            "HERMES-AUD-010"
           ]
         }
       ],
@@ -52,13 +55,16 @@
           "id": "cli-desktop",
           "title": "CLI, TUI, desktop, setup, and diagnostics",
           "tasks": [
-            "HERMES-AUD-004"
+            "HERMES-AUD-004",
+            "HERMES-AUD-011"
           ]
         },
         {
           "id": "quality",
           "title": "Testing, packaging, documentation, and release quality",
-          "tasks": []
+          "tasks": [
+            "HERMES-AUD-007"
+          ]
         }
       ],
       "tasks": [

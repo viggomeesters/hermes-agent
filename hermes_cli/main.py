@@ -13705,6 +13705,36 @@ def main():
         help="Skip the timestamped backup copy (not recommended)",
     )
 
+    sessions_maintain = sessions_subparsers.add_parser(
+        "maintain",
+        help="Safely clean leaked routing rows and stale/expired sessions",
+        description=(
+            "Classify session-store cleanup. Dry-run is the default; pass --apply "
+            "and --yes to mutate after writing transcript + rollback evidence."
+        ),
+    )
+    sessions_maintain.add_argument(
+        "--stale-after-hours",
+        type=float,
+        default=24,
+        help="Close unleased open sessions inactive this many hours (default: 24)",
+    )
+    sessions_maintain.add_argument(
+        "--retention-days",
+        type=int,
+        help="Delete ended sessions older than this many days (default: config or 90)",
+    )
+    sessions_maintain.add_argument(
+        "--backup-dir",
+        help="Evidence directory (default: <HERMES_HOME>/backups/session-maintenance)",
+    )
+    sessions_maintain.add_argument(
+        "--apply", action="store_true", help="Apply the classified maintenance plan"
+    )
+    sessions_maintain.add_argument(
+        "--yes", "-y", action="store_true", help="Required with --apply"
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -13735,6 +13765,50 @@ def main():
         import json as _json
 
         action = args.sessions_action
+
+        if action == "maintain":
+            from hermes_cli.config import load_config
+            from hermes_constants import get_hermes_home as _get_hermes_home
+            from hermes_state import SessionDB
+
+            retention_days = getattr(args, "retention_days", None)
+            if retention_days is None:
+                try:
+                    retention_days = int(
+                        load_config().get("sessions", {}).get("retention_days", 90)
+                    )
+                except (TypeError, ValueError):
+                    retention_days = 90
+            backup_dir = Path(
+                getattr(args, "backup_dir", None)
+                or _get_hermes_home() / "backups" / "session-maintenance"
+            ).expanduser()
+            db = SessionDB()
+            try:
+                if getattr(args, "apply", False):
+                    if not getattr(args, "yes", False):
+                        print("Refusing to apply: pass both --apply and --yes.")
+                        return
+                    report = db.apply_session_maintenance(
+                        backup_dir=backup_dir,
+                        stale_after_hours=args.stale_after_hours,
+                        retention_days=retention_days,
+                    )
+                else:
+                    report = db.plan_session_maintenance(
+                        stale_after_hours=args.stale_after_hours,
+                        retention_days=retention_days,
+                    )
+                    report["dry_run"] = True
+                    report["apply_command"] = (
+                        "hermes sessions maintain --apply --yes "
+                        f"--stale-after-hours {args.stale_after_hours:g} "
+                        f"--retention-days {retention_days}"
+                    )
+                print(_json.dumps(report, ensure_ascii=False, indent=2))
+            finally:
+                db.close()
+            return
 
         # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
         # exactly the case where SessionDB() can't open, so it operates on the

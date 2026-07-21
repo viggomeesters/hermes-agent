@@ -1,0 +1,29 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "id": "HERMES-AUD-008",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Add explicit session leases with heartbeat and expiry",
+  "description": "Replace the conservative assumption that every gateway routing row is an active session with durable lease ownership, heartbeat, expiry and crash recovery semantics.",
+  "scope": {
+    "read": [
+      "hermes_state.py,gateway/**,hermes_cli/**,tests/**"
+    ],
+    "modify": [
+      "hermes_state.py,gateway/**,hermes_cli/**,tests/**,website/docs/**"
+    ]
+  },
+  "acceptance": [
+    "R1 session_leases records owner platform acquire heartbeat and expiry; R2 gateway acquires renews and releases leases; R3 crash-expired leases recover without losing resumable routing; R4 maintenance protects valid leases and classifies expired leases; R5 multi-process race and restart tests pass."
+  ],
+  "verification": [
+    "scripts/run_tests.sh tests/gateway tests/hermes_cli -q && git diff --check"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "evidence": []
+}
