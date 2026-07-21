@@ -1686,6 +1686,39 @@ class TestGatewayRoutingTable:
             user_id=user_id,
         )
 
+    def test_store_acquires_renews_and_releases_durable_session_lease(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+
+        lease = store._db.get_session_lease(entry.session_id)
+        assert lease["owner_id"] == store.lease_owner_id
+        assert lease["platform"] == "telegram"
+        first_expiry = lease["expires_at"]
+        acquired_at = lease["acquired_at"]
+
+        assert store.get_or_create_session(self._source()).session_id == entry.session_id
+        assert store._db.get_session_lease(entry.session_id)["acquired_at"] == acquired_at
+        assert store.renew_session_leases() == 1
+        assert store._db.get_session_lease(entry.session_id)["expires_at"] >= first_expiry
+
+        assert store.release_session_leases() == 1
+        assert store._db.get_session_lease(entry.session_id) is None
+        store._db.close()
+
+    def test_reset_transfers_lease_to_new_session(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+
+        reset = store.reset_session(entry.session_key)
+
+        assert reset.session_id != entry.session_id
+        assert store._db.get_session_lease(entry.session_id) is None
+        assert store._db.get_session_lease(reset.session_id)["owner_id"] == store.lease_owner_id
+        store.release_session_leases()
+        store._db.close()
+
     def test_index_survives_restart_without_sessions_json(self, tmp_path):
         """Full SessionEntry state rehydrates from state.db alone."""
         config = GatewayConfig()

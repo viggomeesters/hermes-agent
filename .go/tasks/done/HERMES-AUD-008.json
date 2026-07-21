@@ -4,7 +4,7 @@
   "execution_mode": "agent",
   "id": "HERMES-AUD-008",
   "project": "hermes-agent",
-  "status": "open",
+  "status": "done",
   "summary": "Add explicit session leases with heartbeat and expiry",
   "description": "Replace the conservative assumption that every gateway routing row is an active session with durable lease ownership, heartbeat, expiry and crash recovery semantics.",
   "scope": {
@@ -22,8 +22,14 @@
     "scripts/run_tests.sh tests/gateway tests/hermes_cli -q && git diff --check"
   ],
   "claim": {
-    "agent": null,
-    "claimed_at": null
+    "agent": "hermes",
+    "claimed_at": "2026-07-21T06:32:48+02:00"
   },
-  "evidence": []
+  "evidence": [
+    {
+      "created_at": "2026-07-21T06:52:44+02:00",
+      "agent": "hermes",
+      "summary": "R1-R5 implemented: durable atomic session leases with owner/platform/acquire/heartbeat/expiry; gateway acquire-renew-release lifecycle; expired-owner crash recovery preserves open session routing; maintenance protects active and classifies/removes expired leases; multiprocess race/restart coverage. Verification: 249 targeted tests passed, go-workflow validate passed, git diff check passed. Broad gateway+CLI run previously exposed 21 failures; the 2 regressions caused by this diff were repaired and included in the 249 green rerun; remaining failures are unrelated baseline/dependency issues. Runtime deliberately not restarted: gateway PID 1656285 remains active with NRestarts=0."
+    }
+  ]
 }

@@ -974,6 +974,11 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
+        self.lease_owner_id = f"gateway:{os.getpid()}"
+        self._lease_ttl_seconds = max(
+            10.0, float(getattr(config, "session_lease_ttl_seconds", 120.0))
+        )
+        self._leased_session_ids: set[str] = set()
         # Whether to keep writing the legacy sessions.json mirror alongside
         # the primary gateway_routing table in state.db. Default True for
         # backward compatibility; disable via gateway.write_sessions_json.
@@ -1006,6 +1011,88 @@ class SessionStore:
             return str(Path(self.sessions_dir).resolve())
         except Exception:
             return str(self.sessions_dir)
+
+    def _acquire_entry_lease(self, entry: "SessionEntry") -> None:
+        """Acquire durable ownership before this process uses a routed session."""
+        if self._db is None or not entry.session_id:
+            return
+        # Compression-tip healing can encounter a transient/legacy routing ID
+        # before its canonical session row exists. Such a phantom ID cannot own
+        # a foreign-keyed lease; keep routing recovery non-fatal and acquire as
+        # soon as the durable row is present on a later access.
+        if self._db.get_session(entry.session_id) is None:
+            logger.warning(
+                "gateway.session: skipping lease for missing session row %s",
+                entry.session_id,
+            )
+            return
+        platform = entry.platform.value if entry.platform else "unknown"
+        acquired = self._db.acquire_session_lease(
+            entry.session_id,
+            owner_id=self.lease_owner_id,
+            platform=platform,
+            ttl_seconds=self._lease_ttl_seconds,
+        )
+        if not acquired:
+            raise RuntimeError(
+                f"session {entry.session_id} is leased by another live gateway"
+            )
+        self._leased_session_ids.add(entry.session_id)
+
+    def renew_session_leases(self) -> int:
+        """Heartbeat every session currently owned by this gateway process."""
+        if self._db is None:
+            return 0
+        renewed = 0
+        for session_id in list(self._leased_session_ids):
+            try:
+                if self._db.heartbeat_session_lease(
+                    session_id,
+                    owner_id=self.lease_owner_id,
+                    ttl_seconds=self._lease_ttl_seconds,
+                ):
+                    renewed += 1
+                else:
+                    self._leased_session_ids.discard(session_id)
+            except Exception:
+                logger.warning(
+                    "gateway.session: lease heartbeat failed for %s",
+                    session_id,
+                    exc_info=True,
+                )
+        return renewed
+
+    def _release_session_lease(self, session_id: Optional[str]) -> bool:
+        if self._db is None or not session_id:
+            return False
+        try:
+            released = self._db.release_session_lease(
+                session_id, owner_id=self.lease_owner_id
+            )
+        finally:
+            self._leased_session_ids.discard(session_id)
+        return bool(released)
+
+    def release_session_leases(self) -> int:
+        """Release all leases owned by this gateway during graceful shutdown."""
+        if self._db is None:
+            return 0
+        released = 0
+        for session_id in list(self._leased_session_ids):
+            try:
+                if self._db.release_session_lease(
+                    session_id, owner_id=self.lease_owner_id
+                ):
+                    released += 1
+            except Exception:
+                logger.warning(
+                    "gateway.session: lease release failed for %s",
+                    session_id,
+                    exc_info=True,
+                )
+            finally:
+                self._leased_session_ids.discard(session_id)
+        return released
 
     def _ensure_loaded_locked(self) -> None:
         """Load the routing index. Must be called with self._lock held.
@@ -1793,12 +1880,14 @@ class SessionStore:
                             else:
                                 entry.updated_at = now
                                 self._save()
+                                self._acquire_entry_lease(entry)
                                 return entry
                     else:
                         reset_reason = self._should_reset(entry, source)
                     if not reset_reason:
                         entry.updated_at = now
                         self._save()
+                        self._acquire_entry_lease(entry)
                         return entry
                     else:
                         # Session is being auto-reset.
@@ -1824,6 +1913,7 @@ class SessionStore:
                 if recovered_entry is not None:
                     self._entries[session_key] = recovered_entry
                     self._save()
+                    self._acquire_entry_lease(recovered_entry)
                     return recovered_entry
 
             # Create new session
@@ -1859,6 +1949,7 @@ class SessionStore:
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")
+                self._release_session_lease(db_end_session_id)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -1871,6 +1962,7 @@ class SessionStore:
                     source,
                     display_name=entry.display_name,
                 )
+                self._acquire_entry_lease(entry)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
@@ -2131,6 +2223,7 @@ class SessionStore:
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")
+                self._release_session_lease(db_end_session_id)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2143,6 +2236,7 @@ class SessionStore:
                     old_entry.origin,
                     display_name=new_entry.display_name if new_entry else None,
                 )
+                self._acquire_entry_lease(new_entry)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2192,6 +2286,7 @@ class SessionStore:
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_switch")
+                self._release_session_lease(db_end_session_id)
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
 
@@ -2206,6 +2301,7 @@ class SessionStore:
                 new_entry.origin if new_entry else None,
                 display_name=new_entry.display_name if new_entry else None,
             )
+            self._acquire_entry_lease(new_entry)
 
         return new_entry
 

@@ -812,6 +812,16 @@ CREATE TABLE IF NOT EXISTS gateway_routing (
     PRIMARY KEY (scope, session_key)
 );
 
+CREATE TABLE IF NOT EXISTS session_leases (
+    session_id TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    acquired_at REAL NOT NULL,
+    heartbeat_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS compression_locks (
     session_id TEXT PRIMARY KEY,
     holder TEXT NOT NULL,
@@ -825,6 +835,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_leases_expires ON session_leases(expires_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -1803,6 +1814,101 @@ class SessionDB:
             )
 
         self._execute_write(_do)
+
+    # ── Gateway session leases + routing index ───────────────────────────
+
+    def acquire_session_lease(
+        self,
+        session_id: str,
+        *,
+        owner_id: str,
+        platform: str,
+        ttl_seconds: float,
+    ) -> bool:
+        """Atomically acquire or recover an expired gateway session lease."""
+        if not session_id or not owner_id or not platform or ttl_seconds <= 0:
+            return False
+        now = time.time()
+        expires_at = now + float(ttl_seconds)
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO session_leases (
+                       session_id, owner_id, platform, acquired_at,
+                       heartbeat_at, expires_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                       owner_id = excluded.owner_id,
+                       platform = excluded.platform,
+                       acquired_at = CASE
+                           WHEN session_leases.owner_id = excluded.owner_id
+                           THEN session_leases.acquired_at
+                           ELSE excluded.acquired_at
+                       END,
+                       heartbeat_at = excluded.heartbeat_at,
+                       expires_at = excluded.expires_at
+                   WHERE session_leases.owner_id = excluded.owner_id
+                      OR session_leases.expires_at <= excluded.acquired_at""",
+                (session_id, owner_id, platform, now, now, expires_at),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
+    def heartbeat_session_lease(
+        self,
+        session_id: str,
+        *,
+        owner_id: str,
+        ttl_seconds: float,
+    ) -> bool:
+        """Renew a live lease only while the caller still owns it."""
+        if not session_id or not owner_id or ttl_seconds <= 0:
+            return False
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE session_leases
+                   SET heartbeat_at = ?, expires_at = ?
+                   WHERE session_id = ? AND owner_id = ? AND expires_at > ?""",
+                (now, now + float(ttl_seconds), session_id, owner_id, now),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
+    def release_session_lease(self, session_id: str, *, owner_id: str) -> bool:
+        """Release a lease without allowing one gateway to release another's."""
+        if not session_id or not owner_id:
+            return False
+
+        def _do(conn):
+            cursor = conn.execute(
+                "DELETE FROM session_leases WHERE session_id = ? AND owner_id = ?",
+                (session_id, owner_id),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._execute_write(_do))
+
+    def get_session_lease(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the durable lease row for a session, including expired rows."""
+        if not session_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM session_leases WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_session_leases(self) -> List[Dict[str, Any]]:
+        """Return all lease rows for diagnostics and maintenance classification."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM session_leases ORDER BY expires_at DESC"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
 
@@ -5810,7 +5916,7 @@ class SessionDB:
                 "SELECT scope, session_key, entry_json FROM gateway_routing"
             ).fetchall()
             invalid_routing: List[Tuple[str, str]] = []
-            leased_session_ids: set[str] = set()
+            routed_session_ids: set[str] = set()
             for row in routing_rows:
                 scope = row["scope"]
                 if self._is_test_routing_scope(scope):
@@ -5821,14 +5927,36 @@ class SessionDB:
                 except (TypeError, ValueError, json.JSONDecodeError):
                     session_id = None
                 if session_id:
-                    leased_session_ids.add(str(session_id))
+                    routed_session_ids.add(str(session_id))
+
+            lease_rows = self._conn.execute(
+                "SELECT session_id, expires_at FROM session_leases"
+            ).fetchall()
+            active_lease_session_ids = {
+                str(row["session_id"]) for row in lease_rows if row["expires_at"] > now
+            }
+            expired_lease_session_ids = {
+                str(row["session_id"]) for row in lease_rows if row["expires_at"] <= now
+            }
+            # Upgrade safety: a routing row written by a pre-lease gateway has no
+            # durable owner yet. Protect it until the upgraded gateway starts and
+            # claims it. A route with an explicitly expired lease is recoverable
+            # and must not receive this fallback protection.
+            routed_unleased_session_ids = (
+                routed_session_ids
+                - active_lease_session_ids
+                - expired_lease_session_ids
+            )
+            protected_session_ids = (
+                active_lease_session_ids | routed_unleased_session_ids
+            )
 
             lease_sql = ""
             lease_params: List[Any] = []
-            if leased_session_ids:
-                placeholders = ",".join("?" * len(leased_session_ids))
+            if protected_session_ids:
+                placeholders = ",".join("?" * len(protected_session_ids))
                 lease_sql = f" AND s.id NOT IN ({placeholders})"
-                lease_params = sorted(leased_session_ids)
+                lease_params = sorted(protected_session_ids)
 
             stale_rows = self._conn.execute(
                 "SELECT s.id FROM sessions s "
@@ -5863,7 +5991,11 @@ class SessionDB:
             "retention_days": retention_days,
             "db_bytes": db_size,
             "counts": counts,
-            "leased_session_ids": sorted(leased_session_ids),
+            "leased_session_ids": sorted(active_lease_session_ids),
+            "active_lease_session_ids": sorted(active_lease_session_ids),
+            "expired_lease_session_ids": sorted(expired_lease_session_ids),
+            "routed_unleased_session_ids": sorted(routed_unleased_session_ids),
+            "protected_session_ids": sorted(protected_session_ids),
             "invalid_routing_keys": [list(item) for item in invalid_routing],
             "stale_open_session_ids": [row["id"] for row in stale_rows],
             "retention_session_ids": [row["id"] for row in retention_rows],
@@ -5896,6 +6028,7 @@ class SessionDB:
             handle.flush()
 
         invalid_keys = [tuple(item) for item in before["invalid_routing_keys"]]
+        expired_lease_ids = list(before["expired_lease_session_ids"])
         stale_ids = list(before["stale_open_session_ids"])
         retention_ids = list(before["retention_session_ids"])
 
@@ -5904,6 +6037,12 @@ class SessionDB:
                 conn.executemany(
                     "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
                     invalid_keys,
+                )
+            if expired_lease_ids:
+                placeholders = ",".join("?" * len(expired_lease_ids))
+                conn.execute(
+                    f"DELETE FROM session_leases WHERE session_id IN ({placeholders})",
+                    expired_lease_ids,
                 )
             if stale_ids:
                 placeholders = ",".join("?" * len(stale_ids))
@@ -5938,6 +6077,7 @@ class SessionDB:
             "after": after,
             "applied": {
                 "invalid_routing_removed": len(invalid_keys),
+                "expired_leases_removed": len(expired_lease_ids),
                 "stale_open_closed": len(stale_ids),
                 "retention_sessions_removed": len(retention_ids),
             },

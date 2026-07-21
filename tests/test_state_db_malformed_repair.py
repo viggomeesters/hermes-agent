@@ -407,6 +407,105 @@ def test_write_health_probe_bounds_large_integrity_scan(tmp_path):
     assert elapsed < 1.0
 
 
+def test_session_lease_has_atomic_owner_heartbeat_and_expiry(tmp_path):
+    """Only one live gateway owner can lease a session; expiry enables recovery."""
+    import time
+
+    db_path = tmp_path / "state.db"
+    session_id = _build_healthy_db(db_path)
+    first = SessionDB(db_path=db_path)
+    second = SessionDB(db_path=db_path)
+    try:
+        assert first.acquire_session_lease(
+            session_id,
+            owner_id="gateway-a",
+            platform="telegram",
+            ttl_seconds=30,
+        ) is True
+        assert second.acquire_session_lease(
+            session_id,
+            owner_id="gateway-b",
+            platform="telegram",
+            ttl_seconds=30,
+        ) is False
+        assert first.heartbeat_session_lease(
+            session_id, owner_id="gateway-a", ttl_seconds=60
+        ) is True
+
+        lease = first.get_session_lease(session_id)
+        assert lease["owner_id"] == "gateway-a"
+        assert lease["platform"] == "telegram"
+        assert lease["expires_at"] > lease["heartbeat_at"] >= lease["acquired_at"]
+
+        first._conn.execute(
+            "UPDATE session_leases SET expires_at = ? WHERE session_id = ?",
+            (time.time() - 1, session_id),
+        )
+        first._conn.commit()
+        assert second.acquire_session_lease(
+            session_id,
+            owner_id="gateway-b",
+            platform="telegram",
+            ttl_seconds=30,
+        ) is True
+        assert first.heartbeat_session_lease(
+            session_id, owner_id="gateway-a", ttl_seconds=60
+        ) is False
+    finally:
+        first.close()
+        second.close()
+
+
+def test_session_lease_recovers_across_processes_after_owner_crash(tmp_path):
+    """A second process is blocked while live, then recovers the same session."""
+    import subprocess
+    import sys
+    import time
+
+    db_path = tmp_path / "state.db"
+    session_id = _build_healthy_db(db_path)
+    script = """
+import sys
+from pathlib import Path
+from hermes_state import SessionDB
+path, session_id, owner = sys.argv[1:4]
+db = SessionDB(db_path=Path(path))
+try:
+    print(db.acquire_session_lease(
+        session_id, owner_id=owner, platform='telegram', ttl_seconds=60
+    ))
+finally:
+    db.close()
+"""
+
+    def acquire(owner):
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(db_path), session_id, owner],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout.strip() == "True"
+
+    assert acquire("gateway-process-a") is True
+    assert acquire("gateway-process-b") is False
+
+    db = SessionDB(db_path=db_path)
+    db._conn.execute(
+        "UPDATE session_leases SET expires_at = ? WHERE session_id = ?",
+        (time.time() - 1, session_id),
+    )
+    db._conn.commit()
+    db.close()
+
+    assert acquire("gateway-process-b") is True
+    db = SessionDB(db_path=db_path)
+    assert db.get_session(session_id)["ended_at"] is None
+    assert db.get_session_lease(session_id)["owner_id"] == "gateway-process-b"
+    db.close()
+
+
 def test_session_maintenance_preserves_leases_and_writes_rollback_evidence(tmp_path):
     """Maintenance removes test leaks but never closes a routed live session."""
     import json
@@ -442,11 +541,30 @@ def test_session_maintenance_preserves_leases_and_writes_rollback_evidence(tmp_p
         json.dumps({"session_id": stale_id}),
         scope="/tmp/pytest-of-viggo/pytest-1/sessions",
     )
+    assert db.acquire_session_lease(
+        leased_id,
+        owner_id="gateway-live",
+        platform="telegram",
+        ttl_seconds=60,
+    )
+    assert db.acquire_session_lease(
+        stale_id,
+        owner_id="gateway-crashed",
+        platform="telegram",
+        ttl_seconds=60,
+    )
+    db._conn.execute(
+        "UPDATE session_leases SET expires_at = ? WHERE session_id = ?",
+        (time.time() - 1, stale_id),
+    )
+    db._conn.commit()
 
     plan = db.plan_session_maintenance(stale_after_hours=24, retention_days=90)
     assert stale_id in plan["stale_open_session_ids"]
     assert leased_id not in plan["stale_open_session_ids"]
     assert expired_id in plan["retention_session_ids"]
+    assert plan["active_lease_session_ids"] == [leased_id]
+    assert plan["expired_lease_session_ids"] == [stale_id]
     assert len(plan["invalid_routing_keys"]) == 1
 
     report = db.apply_session_maintenance(
@@ -456,6 +574,7 @@ def test_session_maintenance_preserves_leases_and_writes_rollback_evidence(tmp_p
     )
     assert report["applied"] == {
         "invalid_routing_removed": 1,
+        "expired_leases_removed": 1,
         "stale_open_closed": 1,
         "retention_sessions_removed": 1,
     }

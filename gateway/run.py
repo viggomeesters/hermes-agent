@@ -7203,6 +7203,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._update_runtime_status("running")
+        if not hasattr(self, "_background_tasks"):
+            self._background_tasks = set()
+        _lease_task = asyncio.create_task(self._session_lease_heartbeat_loop())
+        self._background_tasks.add(_lease_task)
+        _lease_task.add_done_callback(self._background_tasks.discard)
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -7982,6 +7987,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 await asyncio.sleep(1)
 
+    async def _session_lease_heartbeat_loop(self) -> None:
+        """Keep durable session ownership fresh without blocking the event loop."""
+        interval = max(
+            5.0,
+            min(30.0, float(self.session_store._lease_ttl_seconds) / 3.0),
+        )
+        while self._running:
+            await asyncio.sleep(interval)
+            if not self._running:
+                return
+            await asyncio.to_thread(self.session_store.renew_session_leases)
+
     async def stop(
         self,
         *,
@@ -8255,6 +8272,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
                 _task.cancel()
             self._background_tasks.clear()
+
+            try:
+                _released_leases = await asyncio.to_thread(
+                    self.session_store.release_session_leases
+                )
+                if _released_leases:
+                    logger.info(
+                        "Shutdown phase: released %d session lease(s)",
+                        _released_leases,
+                    )
+            except Exception as _e:
+                logger.warning("Session lease release failed during shutdown: %s", _e)
 
             self.adapters.clear()
             for _session_key in list(self._running_agents):
