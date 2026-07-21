@@ -332,24 +332,35 @@ async def test_oversized_content_skips_rich_and_chunks():
 
 
 @pytest.mark.asyncio
-async def test_rich_limit_is_characters_not_bytes():
-    """Telegram's rich limit is UTF-8 characters, not encoded bytes."""
-    adapter = _make_adapter()
-    # Rich-eligible (table) so the content takes the rich path; the accented
-    # body is 20k chars / 40k UTF-8 bytes — over the byte count, under the
-    # character cap. CJK is intentionally avoided here because affected
-    # Telegram Desktop clients render CJK rich drafts incorrectly.
-    accented = "| a | b |\n|---|---|\n" + "é" * 20000
-    assert len(accented.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
-    assert len(accented) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+async def test_long_table_report_uses_lossless_legacy_chunks():
+    """Long rich reports must not rely on one client-rendered rich message.
 
-    result = await adapter.send("12345", accented)
+    Production incident HERMES-AUD-012: Telegram accepted a 10,684-character
+    table-heavy ``sendRichMessage`` payload but the client displayed only a
+    fragment.  Anything above the reliable legacy boundary must use numbered
+    chunks so every section, including the tail, is delivered.
+    """
+    adapter = _make_adapter()
+    body = "\n".join(
+        f"### Audit section {index}\nEvidence line {index}: " + ("x" * 140)
+        for index in range(1, 65)
+    )
+    report = "| Check | Status |\n|---|---|\n| Delivery | audit |\n\n" + body
+    report += "\n\n## Verificatie\nTAILSENTINELHERMESAUD012"
+    assert len(report) > TelegramAdapter.MAX_MESSAGE_LENGTH
+    assert len(report) < TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.send("12345", report)
 
     assert result.success is True
     bot = adapter._bot
     assert bot is not None
-    bot.do_api_request.assert_awaited_once()
-    bot.send_message.assert_not_called()
+    bot.do_api_request.assert_not_called()
+    assert bot.send_message.await_count > 1
+    delivered = "\n".join(call.kwargs["text"] for call in bot.send_message.await_args_list)
+    assert "Audit section 1" in delivered
+    assert "Audit section 64" in delivered
+    assert "TAILSENTINELHERMESAUD012" in delivered
 
 
 @pytest.mark.asyncio
@@ -787,13 +798,13 @@ def test_prefers_fresh_final_streaming_honors_rich_opt_out():
 
 
 # ----------------------------------------------------------------------
-# streaming_overflow_limit: with rich on, the stream consumer may accumulate up
-# to the 32,768-char rich cap before splitting, so a reply that fits one
-# sendRichMessage / sendRichMessageDraft isn't fragmented at the 4,096 limit.
+# streaming_overflow_limit: Telegram can accept a larger rich payload, but live
+# clients have displayed accepted long rich finals as truncated fragments. Keep
+# streaming at the reliable 4,096-unit boundary so overflow becomes chunks.
 # ----------------------------------------------------------------------
-def test_streaming_overflow_limit_is_rich_cap_when_enabled():
+def test_streaming_overflow_limit_stays_at_reliable_message_boundary():
     adapter = _make_adapter()
-    assert adapter.streaming_overflow_limit() == TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+    assert adapter.streaming_overflow_limit() == TelegramAdapter.MAX_MESSAGE_LENGTH
 
 
 def test_streaming_overflow_limit_none_when_rich_opted_out():
@@ -974,14 +985,18 @@ async def test_finalize_edit_opt_out_uses_legacy():
 
 
 @pytest.mark.asyncio
-async def test_finalize_edit_rich_over_markdownv2_limit_not_split():
-    """A rich table that exceeds the 4,096 MarkdownV2 limit but fits the 32,768
-    rich cap is edited in place as one rich message, NOT split into legacy
-    chunks."""
+async def test_finalize_edit_long_rich_table_splits_losslessly():
+    """A long rich table finalizes through the proven continuation path.
+
+    Telegram accepting one oversized rich edit is not proof that clients render
+    its complete content. The existing overflow path edits chunk one in place
+    and sends every remaining chunk as a continuation.
+    """
     adapter = _make_adapter()
     big_table = "| a | b |\n|---|---|\n" + "\n".join(
         f"| {'x' * 50} | {'y' * 50} |" for _ in range(40)
     )
+    big_table += "\n| TAILSENTINEL | COMPLETE |"
     assert len(big_table) > TelegramAdapter.MAX_MESSAGE_LENGTH
     assert len(big_table) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
 
@@ -990,9 +1005,14 @@ async def test_finalize_edit_rich_over_markdownv2_limit_not_split():
     )
 
     assert result.success is True
-    api_kwargs = _rich_edit_kwargs(adapter)
-    assert api_kwargs["rich_message"]["markdown"] == big_table
-    adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited_once()
+    assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
+    delivered = "\n".join(
+        [adapter._bot.edit_message_text.await_args.kwargs["text"]]
+        + [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
+    )
+    assert "TAILSENTINEL" in delivered
 
 
 # --------------------------------------------------------------------------
