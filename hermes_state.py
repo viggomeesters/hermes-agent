@@ -935,27 +935,41 @@ class SessionDB:
 
     @staticmethod
     def _refuse_live_test_write(db_path: Path) -> None:
-        """Fail closed when pytest resolves a writable live Hermes database.
+        """Fail closed when pytest resolves any live Hermes database.
 
         Test fixtures normally redirect ``HERMES_HOME`` to ``tmp_path``. That
         protection can be bypassed by import-time ``DEFAULT_DB_PATH`` caching,
         an explicit ``db_path``, a subprocess with incomplete environment
-        isolation, or a symlink alias. Refuse the resolved real-home path at
-        the storage boundary so a missed fixture becomes a loud test failure
-        instead of silently adding sessions to production.
+        isolation, a monkeypatched ``HOME``, or a symlink alias. Resolve both
+        the target and every discoverable account home so those paths fail
+        loudly at the storage boundary instead of touching production.
         """
         if "pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ:
             return
+
+        candidate_homes: set[Path] = {Path.home()}
+        for env_name in ("HOME", "USERPROFILE"):
+            raw = os.environ.get(env_name)
+            if raw:
+                candidate_homes.add(Path(raw).expanduser())
         try:
-            resolved_db = Path(db_path).expanduser().resolve(strict=False)
-            real_home = (Path.home() / ".hermes").resolve(strict=False)
-            resolved_db.relative_to(real_home)
-        except ValueError:
-            return
-        raise RuntimeError(
-            "pytest refused access to live Hermes state: "
-            f"{resolved_db}. Set HERMES_HOME/use tmp_path before opening SessionDB."
-        )
+            import pwd
+
+            candidate_homes.add(Path(pwd.getpwuid(os.getuid()).pw_dir))
+        except (ImportError, KeyError, OSError):
+            pass
+
+        resolved_db = Path(db_path).expanduser().resolve(strict=False)
+        for home in candidate_homes:
+            protected_root = (home / ".hermes").resolve(strict=False)
+            try:
+                resolved_db.relative_to(protected_root)
+            except ValueError:
+                continue
+            raise RuntimeError(
+                "pytest refused access to live Hermes state: "
+                f"{resolved_db}. Set HERMES_HOME/use tmp_path before opening SessionDB."
+            )
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH

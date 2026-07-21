@@ -4,7 +4,7 @@
   "execution_mode": "mechanical",
   "id": "HERMES-AUD-007",
   "project": "hermes-agent",
-  "status": "open",
+  "status": "done",
   "summary": "Fail closed when tests resolve live Hermes state",
   "description": "Prevent pytest processes and subprocesses from opening or mutating the real ~/.hermes state store through HERMES_HOME drift, import-time DEFAULT_DB_PATH caching, explicit db_path values, profile homes, or symlink aliases.",
   "scope": {
@@ -22,8 +22,14 @@
     "scripts/run_tests.sh tests/test_state_db_malformed_repair.py tests/hermes_cli tests/gateway -q && git diff --check"
   ],
   "claim": {
-    "agent": null,
-    "claimed_at": null
+    "agent": "hermes",
+    "claimed_at": "2026-07-21T06:29:34+02:00"
   },
-  "evidence": []
+  "evidence": [
+    {
+      "created_at": "2026-07-21T06:31:27+02:00",
+      "agent": "hermes",
+      "summary": "R1 pytest blocks all SessionDB access under resolved account ~/.hermes including profiles and read_only; R2 symlink alias test passed; R3 import-time DEFAULT_DB_PATH and subprocess HOME override tests passed; R4 canonical isolated file 23_passed plus ad_hoc_live_root_decoy_sha_unchanged_and_cleaned plus zero_pytest_routing_zero_pytest_cwd_sessions; R5 tmp_path SessionDB suite and production gateway remain healthy PID1656285 restart0; git_diff_check_ok; go_validate_ok"
+    }
+  ]
 }
