@@ -623,7 +623,8 @@ Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
 - **`tool_progress`** defaults to **`off`** — no per-tool breadcrumb stream filling up the chat.
 - **`busy_ack_detail`** defaults to **`off`** — busy-state acknowledgments and long-running heartbeats stay terse (no `iteration 21/60` debug detail).
 - **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
-- **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
+- **`long_running_notifications`** stays **on** — a single edit-in-place heartbeat shows elapsed time, the current action, and how long ago real agent activity was observed. After 15 minutes without activity and without an active tool it changes to `⚠️ Possibly stalled` instead of claiming healthy progress.
+- **Verified workflow milestones stay durable** — successful repo-local `go finish`, legacy `finish_task.py`, and Hermes Kanban completion calls produce their own task-completion message. The default is `✅ <task-id> completed and recorded.`; deployment copy packs can localize it. These messages are not collapsed into the heartbeat and are not removed by `cleanup_progress`.
 
 Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
 

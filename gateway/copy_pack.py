@@ -11,7 +11,7 @@ core retains generic schema/resolution behavior.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -33,13 +33,16 @@ class QueueCopy:
     busy_steer: str
     busy_interrupt: str
     processing_error: str
+    milestone_complete: str = "✅ {task_id} completed and recorded."
 
     def format(self, key: str, **kwargs: Any) -> str:
         template = getattr(self, key)
         return template.format(**kwargs)
 
 
-_REQUIRED_QUEUE_COPY_KEYS = tuple(field.name for field in fields(QueueCopy))
+_REQUIRED_QUEUE_COPY_KEYS = tuple(
+    field.name for field in fields(QueueCopy) if field.default is MISSING
+)
 
 
 COPY_PACKS: dict[str, QueueCopy] = {
@@ -110,11 +113,14 @@ def _queue_copy_from_payload(payload: dict[str, Any], source: Path) -> tuple[str
     if not isinstance(messages, dict):
         return None
     values: dict[str, str] = {}
-    for key in _REQUIRED_QUEUE_COPY_KEYS:
-        value = messages.get(key)
-        if not isinstance(value, str) or not value:
+    for field in fields(QueueCopy):
+        value = messages.get(field.name)
+        if isinstance(value, str) and value:
+            values[field.name] = value
+            continue
+        if field.name in _REQUIRED_QUEUE_COPY_KEYS:
             return None
-        values[key] = value
+        values[field.name] = str(field.default)
     return name, QueueCopy(**values)
 
 

@@ -16,6 +16,7 @@ BERTUS_MESSAGES = {
     "busy_steer": "Ik heb ’m bij de lopende klus gezet{status_detail}; na de volgende toolcall lees ik ’m mee.",
     "busy_interrupt": "Ik kap de huidige klus af{status_detail}. Ik pak je nieuwe bericht zo op.",
     "processing_error": "Daar ging iets stuk ({error_type}).\nIk heb dit nodig: {error_detail}\nNiet gelukt; opnieuw sturen of /reset.",
+    "milestone_complete": "✅ {task_id} afgerond en vastgelegd.",
 }
 
 
@@ -56,6 +57,23 @@ def test_bertus_queue_lifecycle_copy_is_non_producty(tmp_path):
     assert copy.queue_empty == "Backlog leeg."
     assert "Current task complete" not in copy.format("current_complete", idx=1, total=1)
     assert "Queue empty" not in copy.queue_empty
+    assert copy.format("milestone_complete", task_id="TASK-7") == "✅ TASK-7 afgerond en vastgelegd."
+
+
+def test_external_pack_without_optional_milestone_copy_uses_generic_default(tmp_path):
+    messages = dict(BERTUS_MESSAGES)
+    messages.pop("milestone_complete")
+    pack_dir = tmp_path / "packs"
+    pack_dir.mkdir()
+    (pack_dir / "legacy.json").write_text(
+        json.dumps({"name": "legacy", "messages": messages}),
+        encoding="utf-8",
+    )
+    cfg = {"display": {"copy_pack_dirs": [str(pack_dir)], "copy_pack": "legacy"}}
+
+    assert copy_for(cfg).format("milestone_complete", task_id="TASK-8") == (
+        "✅ TASK-8 completed and recorded."
+    )
 
 
 def test_bertus_processing_error_copy_replaces_sorry_try_again(tmp_path):

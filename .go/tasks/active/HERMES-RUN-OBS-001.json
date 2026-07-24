@@ -1,0 +1,42 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "id": "HERMES-RUN-OBS-001",
+  "project": "hermes-agent",
+  "status": "active",
+  "summary": "Make long Telegram runs visibly report verified progress",
+  "description": "Repair and harden gateway long-run observability so Telegram users receive reliable periodic health updates and durable top-level milestone messages without relying on manual /steer self-report. Keep status delivery best-effort and outside the model's final-answer path.",
+  "scope": {
+    "read": [
+      "gateway/run.py",
+      "gateway/display_config.py",
+      "gateway/status_phrases.py",
+      "gateway/stream_consumer.py",
+      "agent",
+      "hermes_cli",
+      "tests/gateway"
+    ],
+    "modify": [
+      "agent/tool_executor.py",
+      "gateway/copy_pack.py",
+      "gateway/run.py",
+      "gateway/display_config.py",
+      "gateway/stream_consumer.py",
+      "tests/agent",
+      "tests/gateway",
+      "website/docs"
+    ]
+  },
+  "acceptance": [
+    "Telegram long-running notifications remain visible and thread-correct; an explicit milestone emitted during a run is delivered as a durable separate message while heartbeat stays edit-in-place; notification failures never abort execution; configured platform overrides are covered by regression tests."
+  ],
+  "verification": [
+    "python -m pytest tests/gateway/test_display_config.py tests/gateway -k 'long_running or milestone or heartbeat' -o 'addopts=' -q; bash scripts/validate-go.sh"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-07-24T08:39:52+02:00"
+  },
+  "evidence": []
+}
