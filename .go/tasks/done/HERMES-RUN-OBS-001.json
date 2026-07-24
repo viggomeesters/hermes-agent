@@ -4,7 +4,7 @@
   "execution_mode": "agent",
   "id": "HERMES-RUN-OBS-001",
   "project": "hermes-agent",
-  "status": "active",
+  "status": "done",
   "summary": "Make long Telegram runs visibly report verified progress",
   "description": "Repair and harden gateway long-run observability so Telegram users receive reliable periodic health updates and durable top-level milestone messages without relying on manual /steer self-report. Keep status delivery best-effort and outside the model's final-answer path.",
   "scope": {
@@ -38,5 +38,11 @@
     "agent": "hermes",
     "claimed_at": "2026-07-24T08:39:52+02:00"
   },
-  "evidence": []
+  "evidence": [
+    {
+      "created_at": "2026-07-24T08:55:53+02:00",
+      "agent": "hermes",
+      "summary": "RED: milestone, heartbeat activity-age, stall detection, cleanup durability, and copy-pack compatibility tests failed before implementation. GREEN: focused gateway verification 25 passed/1 skipped; milestone unit tests 6 passed; broader affected regression suite 329 passed. Static: git diff --check, py_compile, Bertus JSON validation, go-workflow validation all passed. Devil review: durable milestones only after successful workflow mutation; untrusted task IDs rejected; notification delivery remains fail-open; milestones remain thread-correct and exempt from cleanup."
+    }
+  ]
 }
