@@ -1,0 +1,37 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "id": "HERMES-RUN-OBS-004",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Scope append-only heartbeats to Telegram",
+  "description": "Recheck hardening for HERMES-RUN-OBS-003: keep Bertus/default Telegram heartbeats append-only and cleanup-exempt without changing edit-in-place and cleanup behavior on other messaging platforms.",
+  "scope": {
+    "read": [
+      "gateway/run.py",
+      "tests/gateway/test_progress_milestone_delivery.py"
+    ],
+    "modify": [
+      "gateway/run.py",
+      "tests/gateway/test_progress_milestone_delivery.py"
+    ]
+  },
+  "acceptance": [
+    "Telegram heartbeats use ordinary send and remain cleanup-exempt; non-Telegram heartbeats retain send_or_update_status and cleanup eligibility; milestones remain durable on every platform."
+  ],
+  "verification": [
+    "python -m pytest tests/gateway/test_progress_milestone_delivery.py tests/gateway/test_display_config.py -o 'addopts=' -q; python -m pytest tests/gateway -k 'long_running or milestone or heartbeat' -o 'addopts=' -q; python -m py_compile gateway/run.py gateway/display_config.py; git diff --check; bash scripts/validate-go.sh"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-07-25T08:31:58+02:00"
+  },
+  "evidence": [
+    {
+      "created_at": "2026-07-25T08:36:22+02:00",
+      "agent": "hermes",
+      "summary": "Recheck found and fixed cross-platform scope creep: Telegram/Bertus heartbeats use permanent send and are cleanup-exempt; non-Telegram callback and long-running rails retain edit-in-place plus cleanup eligibility. TDD: new Telegram/non-Telegram delivery tests. Verification: focused suite 62 passed; broader heartbeat/milestone selection 29 passed, 1 skipped; py_compile, git diff --check, validate-go passed; live config SHA-256 remained d74b571826b1d95cec883289ed452d6614335a10b24ff4f4bdf9e884dc53966a."
+    }
+  ]
+}
