@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock
+from datetime import datetime
 
 import pytest
 
@@ -79,9 +80,13 @@ def test_heartbeat_reports_last_real_activity_and_current_action():
         agent,
         elapsed_mins=22,
         want_iteration_detail=False,
+        updated_at=datetime(2026, 7, 25, 7, 21),
     )
 
-    assert text == "⏳ Working — 22 min — terminal, last activity 2 min ago"
+    assert text == (
+        "⏳ Working — 22 min — updated 07:21 — "
+        "terminal, last activity 2 min ago"
+    )
 
 
 def test_heartbeat_marks_missing_activity_as_possible_stall():
@@ -98,10 +103,11 @@ def test_heartbeat_marks_missing_activity_as_possible_stall():
         agent,
         elapsed_mins=41,
         want_iteration_detail=True,
+        updated_at=datetime(2026, 7, 25, 7, 31),
     )
 
     assert text == (
-        "⚠️ Possibly stalled — 41 min — iteration 12/90, "
+        "⚠️ Possibly stalled — 41 min — updated 07:31 — iteration 12/90, "
         "waiting for model, no activity for 16 min"
     )
 
@@ -111,4 +117,14 @@ def test_heartbeat_degrades_cleanly_without_agent_summary():
         None,
         elapsed_mins=10,
         want_iteration_detail=False,
-    ) == "⏳ Working — 10 min"
+        updated_at=datetime(2026, 7, 25, 7, 41),
+    ) == "⏳ Working — 10 min — updated 07:41"
+
+
+def test_heartbeat_formats_long_elapsed_time_as_hours_not_hundreds_of_minutes():
+    assert _build_long_running_heartbeat(
+        None,
+        elapsed_mins=640,
+        want_iteration_detail=False,
+        updated_at=datetime(2026, 7, 25, 7, 51),
+    ) == "⏳ Working — 10h 40m — updated 07:51"
