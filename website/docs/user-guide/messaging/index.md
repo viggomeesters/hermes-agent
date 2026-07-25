@@ -623,7 +623,7 @@ Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
 - **`tool_progress`** defaults to **`off`** — no per-tool breadcrumb stream filling up the chat.
 - **`busy_ack_detail`** defaults to **`off`** — busy-state acknowledgments and long-running heartbeats stay terse (no `iteration 21/60` debug detail).
 - **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
-- **`long_running_notifications`** stays **on** — a single edit-in-place heartbeat shows elapsed time, the current action, and how long ago real agent activity was observed. After 15 minutes without activity and without an active tool it changes to `⚠️ Possibly stalled` instead of claiming healthy progress.
+- **`long_running_notifications`** stays **on** — each heartbeat is a new permanent message with its own platform timestamp. It shows elapsed time, the refresh clock, the current action, and how long ago real agent activity was observed. After 15 minutes without activity and without an active tool it changes to `⚠️ Possibly stalled` instead of claiming healthy progress.
 - **Verified workflow milestones stay durable** — successful repo-local `go finish`, legacy `finish_task.py`, and Hermes Kanban completion calls produce their own task-completion message. The default is `✅ <task-id> completed and recorded.`; deployment copy packs can localize it. These messages are not collapsed into the heartbeat and are not removed by `cleanup_progress`.
 
 Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
@@ -643,7 +643,7 @@ display:
 
 ### Progress bubble cleanup (opt-in)
 
-Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
+Transient tool-progress and status-callback bubbles can also be auto-deleted after the final response lands. Append-only long-running heartbeats and verified workflow milestones are evidence messages and are never removed by `cleanup_progress`. Enable cleanup for the remaining transient surfaces per platform via `display.platforms.<platform>.cleanup_progress`:
 
 ```yaml
 display:

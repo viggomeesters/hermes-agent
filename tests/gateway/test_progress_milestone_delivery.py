@@ -41,9 +41,9 @@ def test_default_milestone_copy_is_generic_core_text():
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_status_still_edits_in_place():
+async def test_heartbeat_is_a_durable_separate_message():
     adapter = type("Adapter", (), {})()
-    adapter.send = AsyncMock()
+    adapter.send = AsyncMock(return_value=type("Result", (), {"success": True})())
     adapter.send_or_update_status = AsyncMock(
         return_value=type("Result", (), {"success": True})()
     )
@@ -56,14 +56,13 @@ async def test_heartbeat_status_still_edits_in_place():
         {"thread_id": "topic-7"},
     )
 
-    adapter.send_or_update_status.assert_awaited_once_with(
+    adapter.send.assert_awaited_once_with(
         "chat-1",
-        "heartbeat",
         "⏳ Working — 10 min",
         metadata={"thread_id": "topic-7"},
     )
-    adapter.send.assert_not_awaited()
-    assert _status_is_cleanup_eligible("heartbeat") is True
+    adapter.send_or_update_status.assert_not_awaited()
+    assert _status_is_cleanup_eligible("heartbeat") is False
 
 
 def test_heartbeat_reports_last_real_activity_and_current_action():

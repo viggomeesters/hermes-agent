@@ -574,19 +574,20 @@ def render_notice_line(notice) -> str:
 
 
 def _status_is_cleanup_eligible(status_key: str) -> bool:
-    """Keep durable task milestones after transient progress cleanup."""
-    return status_key != "milestone"
+    """Keep append-only evidence messages after transient progress cleanup."""
+    return status_key not in {"heartbeat", "milestone"}
 
 
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
-    """Route status updates while keeping verified milestones durable.
+    """Route status updates while keeping runtime evidence append-only.
 
     Issue #30045: adapters that implement send_or_update_status (currently
     Telegram) edit the previous bubble for the same status_key instead of
-    appending a new one. Verified workflow milestones intentionally bypass
-    that edit rail: every completed top-level task remains visible in history.
+    appending a new one. Heartbeats and verified workflow milestones
+    intentionally bypass that edit rail so each event retains its real
+    platform timestamp and remains visible in history.
     """
-    if status_key == "milestone":
+    if status_key in {"heartbeat", "milestone"}:
         return await adapter.send(chat_id, content, metadata=metadata)
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
@@ -19382,12 +19383,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _notify_adapter = self._adapter_for_source(source)
             if not _notify_adapter:
                 return
-            # Track the heartbeat message id so we can edit-in-place on
-            # platforms that support it (Telegram, Discord, Slack, etc.)
-            # instead of spamming a new "Still working" bubble every
-            # interval. Falls back to send-new when edit fails or isn't
-            # supported by the adapter.
-            _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
                 # Stop heartbeating once this run no longer owns the session
@@ -19428,29 +19423,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 )
                 try:
-                    _notify_res = None
-                    if _heartbeat_msg_id:
-                        try:
-                            _notify_res = await _notify_adapter.edit_message(
-                                source.chat_id,
-                                _heartbeat_msg_id,
-                                _heartbeat_text,
-                            )
-                        except Exception as _ee:
-                            logger.debug("Heartbeat edit failed: %s", _ee)
-                            _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
-                        _notify_res = await _notify_adapter.send(
-                            source.chat_id,
-                            _heartbeat_text,
-                            metadata=_non_conversational_metadata(_status_thread_metadata, platform=source.platform),
-                        )
-                        if getattr(_notify_res, "success", False) and getattr(
-                            _notify_res, "message_id", None
-                        ):
-                            _heartbeat_msg_id = str(_notify_res.message_id)
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    await _send_or_update_status_coro(
+                        _notify_adapter,
+                        source.chat_id,
+                        "heartbeat",
+                        _heartbeat_text,
+                        _non_conversational_metadata(
+                            _status_thread_metadata,
+                            platform=source.platform,
+                        ),
+                    )
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
