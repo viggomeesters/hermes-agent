@@ -1,0 +1,42 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "id": "HERMES-TG-ACK-001",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Restore visible Telegram fresh-turn acknowledgement",
+  "description": "User-reported screenshot regression: a fresh Telegram question is accepted and worked for minutes without any visible receipt. Runtime policy/config has display.platforms.telegram.start_ack=true, but current core has no sender path. Restore the generic configured start-ack behavior and prove it fails open.",
+  "scope": {
+    "read": [
+      "gateway/display_config.py",
+      "gateway/platforms/base.py",
+      "tests/gateway/test_busy_session_ack.py"
+    ],
+    "modify": [
+      "gateway/platforms/base.py",
+      "tests/gateway/test_start_ack.py",
+      "tests/gateway/test_busy_session_ack.py"
+    ]
+  },
+  "acceptance": [
+    "A fresh non-command Telegram turn sends configured start_ack_text before background processing.",
+    "Slash commands do not receive the fresh-turn start acknowledgement.",
+    "Acknowledgement send failure does not block the real user turn."
+  ],
+  "verification": [
+    "HERMES_HOME=/tmp/hermes-tg-ack-test ./venv/bin/pytest tests/gateway/test_start_ack.py tests/gateway/test_busy_session_ack.py -q -o 'addopts='",
+    "python3 -m py_compile gateway/platforms/base.py tests/gateway/test_start_ack.py"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-07-29T12:53:24+02:00"
+  },
+  "evidence": [
+    {
+      "created_at": "2026-07-29T12:56:16+02:00",
+      "agent": "hermes",
+      "summary": "RED reproduced: configured Telegram start_ack produced no visible send before handler work. Restored generic adapter sender from vetted carry commit a0b4c8b5b with current-branch conflict resolution preserving newer queue-copy assertions. GREEN: HERMES_HOME=/tmp/hermes-tg-ack-final2 ./venv/bin/pytest tests/gateway/test_gateway_delivery_compact.py tests/gateway/test_busy_session_ack.py tests/gateway/test_start_ack.py -q -o 'addopts=' => 36 passed; py_compile passed; git diff --check passed."
+    }
+  ]
+}
