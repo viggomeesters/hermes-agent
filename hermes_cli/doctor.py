@@ -1494,10 +1494,14 @@ def run_doctor(args):
     if state_db_path.exists():
         try:
             import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
-            count = cursor.fetchone()[0]
-            conn.close()
+            conn = sqlite3.connect(
+                f"file:{state_db_path}?mode=ro", uri=True, timeout=1.0
+            )
+            try:
+                cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+                count = cursor.fetchone()[0]
+            finally:
+                conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
 
             # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
@@ -1507,7 +1511,20 @@ def run_doctor(args):
             # repaired in place with --fix).
             from hermes_state import _db_opens_cleanly, repair_state_db_schema
 
-            _write_reason = _db_opens_cleanly(state_db_path)
+            _write_reason = _db_opens_cleanly(state_db_path, max_seconds=5.0)
+            if _write_reason is not None and _write_reason.startswith(
+                "diagnostic timeout"
+            ):
+                check_warn(
+                    f"{_DHH}/state.db deep health probe was bounded",
+                    f"({_write_reason}; database may still be healthy)",
+                )
+                issues.append(
+                    "state.db deep health probe exceeded its 5s diagnostic budget; "
+                    "run 'hermes sessions repair --check-only' during a maintenance window"
+                )
+                _write_reason = None
+
             if _write_reason is not None:
                 check_warn(
                     f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",

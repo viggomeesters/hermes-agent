@@ -60,6 +60,49 @@ def cmd_sessions(args, sessions_parser=None):
 
     action = args.sessions_action
 
+    if action == "maintain":
+        from hermes_cli.config import load_config
+        from hermes_state import SessionDB
+
+        retention_days = getattr(args, "retention_days", None)
+        if retention_days is None:
+            try:
+                retention_days = int(
+                    load_config().get("sessions", {}).get("retention_days", 90)
+                )
+            except (TypeError, ValueError):
+                retention_days = 90
+        backup_dir = Path(
+            getattr(args, "backup_dir", None)
+            or get_hermes_home() / "backups" / "session-maintenance"
+        ).expanduser()
+        db = SessionDB()
+        try:
+            if getattr(args, "apply", False):
+                if not getattr(args, "yes", False):
+                    print("Refusing to apply: pass both --apply and --yes.")
+                    return
+                report = db.apply_session_maintenance(
+                    backup_dir=backup_dir,
+                    stale_after_hours=args.stale_after_hours,
+                    retention_days=retention_days,
+                )
+            else:
+                report = db.plan_session_maintenance(
+                    stale_after_hours=args.stale_after_hours,
+                    retention_days=retention_days,
+                )
+                report["dry_run"] = True
+                report["apply_command"] = (
+                    "hermes sessions maintain --apply --yes "
+                    f"--stale-after-hours {args.stale_after_hours:g} "
+                    f"--retention-days {retention_days}"
+                )
+            print(_json.dumps(report, ensure_ascii=False, indent=2))
+        finally:
+            db.close()
+        return
+
     # 'repair' and 'recover' must run BEFORE opening SessionDB(): a
     # malformed schema is exactly the case where SessionDB() can't open.
     # Recovery additionally promises never to open the supplied source

@@ -1088,7 +1088,9 @@ def preflight_db_writability(
             _ensure_writable(p)
 
 
-def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+def _db_opens_cleanly(
+    db_path: Path, *, max_seconds: Optional[float] = None
+) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
@@ -1100,7 +1102,27 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     past as a false "ok" (#50502).
     """
     # Doctor is diagnostic, not a reason to wait behind a busy live gateway.
+    # ``PRAGMA integrity_check`` is proportional to database size and used to
+    # make doctor appear hung for minutes on multi-gigabyte state stores. A
+    # progress handler lets diagnostic callers bound VM work without changing
+    # the unbounded repair verification path (max_seconds=None).
     conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=1.0)
+    deadline = (
+        time.monotonic() + max_seconds
+        if max_seconds is not None
+        else None
+    )
+    timed_out = False
+
+    def _deadline_reached() -> int:
+        nonlocal timed_out
+        if deadline is not None and time.monotonic() >= deadline:
+            timed_out = True
+            return 1
+        return 0
+
+    if deadline is not None:
+        conn.set_progress_handler(_deadline_reached, 1_000)
     try:
         # Best-effort tokenizer load: a DB carrying the messages_fts_cjk
         # index needs the cjk_unicode61 extension before any statement can
@@ -1210,8 +1232,12 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             return str(exc)
         return None
     except sqlite3.DatabaseError as exc:
+        if timed_out:
+            return f"diagnostic timeout after {max_seconds:g}s"
         return str(exc)
     finally:
+        if deadline is not None:
+            conn.set_progress_handler(None, 0)
         conn.close()
 
 
@@ -1789,9 +1815,35 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     _IMPORT_MAX_SESSION_BYTES = 5 * 1024 * 1024
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
+    @staticmethod
+    def _refuse_live_test_write(db_path: Path) -> None:
+        """Fail closed when pytest resolves a writable live Hermes database.
+
+        Test fixtures normally redirect ``HERMES_HOME`` to ``tmp_path``. That
+        protection can be bypassed by import-time ``DEFAULT_DB_PATH`` caching,
+        an explicit ``db_path``, a subprocess with incomplete environment
+        isolation, or a symlink alias. Refuse the resolved real-home path at
+        the storage boundary so a missed fixture becomes a loud test failure
+        instead of silently adding sessions to production.
+        """
+        if "pytest" not in sys.modules and "PYTEST_CURRENT_TEST" not in os.environ:
+            return
+        try:
+            resolved_db = Path(db_path).expanduser().resolve(strict=False)
+            real_home = (Path.home() / ".hermes").resolve(strict=False)
+            resolved_db.relative_to(real_home)
+        except ValueError:
+            return
+        raise RuntimeError(
+            "pytest refused access to live Hermes state: "
+            f"{resolved_db}. Set HERMES_HOME/use tmp_path before opening SessionDB."
+        )
+
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or _default_db_path()
         self.read_only = read_only
+
+        self._refuse_live_test_write(self.db_path)
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries run on per-thread
@@ -7703,6 +7755,176 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
+
+    @staticmethod
+    def _is_test_routing_scope(scope: str) -> bool:
+        """Return True for routing namespaces created by pytest temp homes."""
+        normalized = (scope or "").replace("\\", "/")
+        return (
+            normalized.startswith("/tmp/pytest-")
+            or "/pytest-of-" in normalized
+            or "/.pytest_tmp/" in normalized
+        )
+
+    def plan_session_maintenance(
+        self, *, stale_after_hours: float = 24, retention_days: int = 90
+    ) -> Dict[str, Any]:
+        """Classify safe maintenance without changing session-store data."""
+        started = time.monotonic()
+        now = time.time()
+        stale_cutoff = now - stale_after_hours * 3600
+        retention_cutoff = now - retention_days * 86400
+        db_size = self.db_path.stat().st_size if self.db_path.exists() else 0
+
+        with self._lock:
+            routing_rows = self._conn.execute(
+                "SELECT scope, session_key, entry_json FROM gateway_routing"
+            ).fetchall()
+            invalid_routing: List[Tuple[str, str]] = []
+            leased_session_ids: set[str] = set()
+            for row in routing_rows:
+                scope = row["scope"]
+                if self._is_test_routing_scope(scope):
+                    invalid_routing.append((scope, row["session_key"]))
+                    continue
+                try:
+                    session_id = json.loads(row["entry_json"]).get("session_id")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    session_id = None
+                if session_id:
+                    leased_session_ids.add(str(session_id))
+
+            lease_sql = ""
+            lease_params: List[Any] = []
+            if leased_session_ids:
+                placeholders = ",".join("?" * len(leased_session_ids))
+                lease_sql = f" AND s.id NOT IN ({placeholders})"
+                lease_params = sorted(leased_session_ids)
+
+            stale_rows = self._conn.execute(
+                "SELECT s.id FROM sessions s "
+                "WHERE s.ended_at IS NULL "
+                "AND COALESCE((SELECT MAX(m.timestamp) FROM messages m "
+                "              WHERE m.session_id = s.id), s.started_at) < ?"
+                + lease_sql,
+                [stale_cutoff, *lease_params],
+            ).fetchall()
+            retention_rows = self._conn.execute(
+                "SELECT s.id FROM sessions s "
+                "WHERE s.ended_at IS NOT NULL AND s.started_at < ?"
+                + lease_sql,
+                [retention_cutoff, *lease_params],
+            ).fetchall()
+            counts = {
+                "sessions": self._conn.execute(
+                    "SELECT COUNT(*) FROM sessions"
+                ).fetchone()[0],
+                "messages": self._conn.execute(
+                    "SELECT COUNT(*) FROM messages"
+                ).fetchone()[0],
+                "open_sessions": self._conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL"
+                ).fetchone()[0],
+                "routing_rows": len(routing_rows),
+            }
+
+        return {
+            "generated_at": now,
+            "stale_after_hours": stale_after_hours,
+            "retention_days": retention_days,
+            "db_bytes": db_size,
+            "counts": counts,
+            "leased_session_ids": sorted(leased_session_ids),
+            "invalid_routing_keys": [list(item) for item in invalid_routing],
+            "stale_open_session_ids": [row["id"] for row in stale_rows],
+            "retention_session_ids": [row["id"] for row in retention_rows],
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+
+    def apply_session_maintenance(
+        self,
+        *,
+        backup_dir: Path,
+        stale_after_hours: float = 24,
+        retention_days: int = 90,
+    ) -> Dict[str, Any]:
+        """Apply a plan after writing transcript and rollback evidence."""
+        started = time.monotonic()
+        before = self.plan_session_maintenance(
+            stale_after_hours=stale_after_hours,
+            retention_days=retention_days,
+        )
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+        backup_path = backup_dir / f"session-maintenance-{stamp}.jsonl"
+        manifest_path = backup_dir / f"session-maintenance-{stamp}.manifest.json"
+
+        with backup_path.open("x", encoding="utf-8") as handle:
+            for session_id in before["retention_session_ids"]:
+                exported = self.export_session(session_id)
+                if exported is not None:
+                    handle.write(json.dumps(exported, ensure_ascii=False) + "\n")
+            handle.flush()
+
+        invalid_keys = [tuple(item) for item in before["invalid_routing_keys"]]
+        stale_ids = list(before["stale_open_session_ids"])
+        retention_ids = list(before["retention_session_ids"])
+
+        def _apply(conn):
+            if invalid_keys:
+                conn.executemany(
+                    "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                    invalid_keys,
+                )
+            if stale_ids:
+                placeholders = ",".join("?" * len(stale_ids))
+                conn.execute(
+                    f"UPDATE sessions SET ended_at = ?, end_reason = ? "
+                    f"WHERE ended_at IS NULL AND id IN ({placeholders})",
+                    [time.time(), "maintenance_stale", *stale_ids],
+                )
+            if retention_ids:
+                placeholders = ",".join("?" * len(retention_ids))
+                conn.execute(
+                    f"UPDATE sessions SET parent_session_id = NULL "
+                    f"WHERE parent_session_id IN ({placeholders})",
+                    retention_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id IN ({placeholders})",
+                    retention_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})",
+                    retention_ids,
+                )
+
+        self._execute_write(_apply)
+        after = self.plan_session_maintenance(
+            stale_after_hours=stale_after_hours,
+            retention_days=retention_days,
+        )
+        report = {
+            "before": before,
+            "after": after,
+            "applied": {
+                "invalid_routing_removed": len(invalid_keys),
+                "stale_open_closed": len(stale_ids),
+                "retention_sessions_removed": len(retention_ids),
+            },
+            "rollback": {
+                "transcript_backup": str(backup_path),
+                "manifest": str(manifest_path),
+                "stale_session_ids": stale_ids,
+                "end_reason": "maintenance_stale",
+            },
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+        manifest_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return report
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 

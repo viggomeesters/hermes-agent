@@ -12139,6 +12139,36 @@ def main():
         help="JSON report path (defaults to <output>.recovery.json)",
     )
 
+    sessions_maintain = sessions_subparsers.add_parser(
+        "maintain",
+        help="Safely clean leaked routing rows and stale/expired sessions",
+        description=(
+            "Classify session-store cleanup. Dry-run is the default; pass --apply "
+            "and --yes to mutate after writing transcript + rollback evidence."
+        ),
+    )
+    sessions_maintain.add_argument(
+        "--stale-after-hours",
+        type=float,
+        default=24,
+        help="Close unleased open sessions inactive this many hours (default: 24)",
+    )
+    sessions_maintain.add_argument(
+        "--retention-days",
+        type=int,
+        help="Delete ended sessions older than this many days (default: config or 90)",
+    )
+    sessions_maintain.add_argument(
+        "--backup-dir",
+        help="Evidence directory (default: <HERMES_HOME>/backups/session-maintenance)",
+    )
+    sessions_maintain.add_argument(
+        "--apply", action="store_true", help="Apply the classified maintenance plan"
+    )
+    sessions_maintain.add_argument(
+        "--yes", "-y", action="store_true", help="Required with --apply"
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
