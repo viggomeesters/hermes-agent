@@ -247,6 +247,56 @@ def test_chat_gateways_keep_normal_answers(platform):
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+def test_chat_gateways_remove_unrenderable_citation_transport_markers(platform):
+    """Renderer-internal OpenAI source tokens must never leak into chat.
+
+    Production incident HERMES-AUD-013 used this exact Bosch sentence. The
+    response carried symbolic source ids but no URL annotations, so Telegram
+    displayed the private transport syntax literally.
+    """
+    raw = (
+        "De Bosch ondersteunt de vierkante, rechthoekige en deltazool; bij de "
+        "complete 06012A2300-uitvoering zitten alle drie de zolen. "
+        "citeturn3search0turn3search1"
+    )
+    expected = (
+        "De Bosch ondersteunt de vierkante, rechthoekige en deltazool; bij de "
+        "complete 06012A2300-uitvoering zitten alle drie de zolen."
+    )
+
+    assert _sanitize_gateway_final_response(platform, raw) == expected
+
+
+def test_programmatic_surfaces_preserve_citation_transport_metadata():
+    """Raw/API surfaces may have their own citation renderer or diagnostics."""
+    raw = "Claim. citeturn3search0turn3search1"
+
+    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
+        assert _sanitize_gateway_final_response(platform, raw) == raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Keep partial marker citeturn3search0",
+        "Keep malformed marker cite",
+        "Keep literal reference turn3search0",
+    ],
+)
+def test_chat_citation_cleanup_keeps_partial_or_malformed_text(raw):
+    """Fail narrow: incomplete syntax must not make adjacent prose disappear."""
+    assert _sanitize_gateway_final_response("telegram", raw) == raw
+
+
+def test_chat_citation_cleanup_does_not_consume_surrounding_prose():
+    raw = "First claim citeturn1search0 and second claim."
+
+    assert _sanitize_gateway_final_response("telegram", raw) == (
+        "First claim and second claim."
+    )
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
 def test_chat_gateways_drop_interrupt_sentinel(platform):
     """The interrupt-while-waiting sentinel is metadata, not a reply (#7921)."""
     sentinel = "Operation interrupted: waiting for model response (1.7s elapsed)."
