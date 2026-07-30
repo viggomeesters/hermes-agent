@@ -54,6 +54,49 @@ def test_pytest_refuses_read_only_live_state_too():
         SessionDB(db_path=Path.home() / ".hermes" / "state.db", read_only=True)
 
 
+def test_pytest_refuses_import_time_cached_default(monkeypatch):
+    monkeypatch.setattr(
+        hermes_state, "DEFAULT_DB_PATH", Path.home() / ".hermes" / "state.db"
+    )
+    with pytest.raises(RuntimeError, match="refused access"):
+        SessionDB()
+
+
+def test_pytest_refuses_profile_live_state_path():
+    profile_db = Path.home() / ".hermes" / "profiles" / "test" / "state.db"
+    with pytest.raises(RuntimeError, match="refused access"):
+        SessionDB(db_path=profile_db)
+
+
+def test_pytest_subprocess_refuses_live_state_after_home_override(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    live_db = Path.home() / ".hermes" / "state.db"
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path / "fake-home")
+    env["HERMES_HOME"] = str(tmp_path / "isolated-hermes")
+    env["PYTEST_CURRENT_TEST"] = "subprocess-live-state-guard"
+    code = (
+        "from pathlib import Path; from hermes_state import SessionDB; "
+        f"p=Path({str(live_db)!r}); "
+        "\ntry: SessionDB(db_path=p)\n"
+        "except RuntimeError: raise SystemExit(0)\n"
+        "raise SystemExit(9)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).parent.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _corrupt_duplicate_fts(db_path: Path) -> None:
     """Inject a duplicate messages_fts row into sqlite_master.
 
