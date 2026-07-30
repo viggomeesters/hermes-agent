@@ -1054,6 +1054,26 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _format_gateway_status_copy(
+    user_config: dict,
+    platform_key: str,
+    event_type: str,
+    message: str,
+) -> str:
+    """Apply deployment copy packs to structured gateway status events."""
+    if event_type != "milestone":
+        return str(message or "")
+    try:
+        from gateway.copy_pack import copy_for
+
+        return copy_for(user_config, platform_key).format(
+            "milestone_complete",
+            task_id=str(message or "").strip(),
+        )
+    except Exception:
+        return f"✅ {str(message or '').strip()} completed and recorded."
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -1084,6 +1104,42 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
+def _build_long_running_heartbeat(
+    agent: Any,
+    *,
+    elapsed_mins: int,
+    want_iteration_detail: bool,
+    stall_after_seconds: float = 900.0,
+) -> str:
+    """Build an evidence-bearing heartbeat from the live agent activity clock."""
+    prefix = "⏳ Working"
+    parts: list[str] = []
+    if agent is not None and hasattr(agent, "get_activity_summary"):
+        try:
+            activity = agent.get_activity_summary() or {}
+            current_tool = activity.get("current_tool")
+            last_desc = activity.get("last_activity_desc")
+            idle_seconds = float(activity.get("seconds_since_activity") or 0.0)
+            if want_iteration_detail:
+                parts.append(
+                    f"iteration {activity.get('api_call_count', 0)}/"
+                    f"{activity.get('max_iterations', '?')}"
+                )
+            action = current_tool or last_desc
+            if action:
+                parts.append(str(action))
+            idle_mins = int(idle_seconds // 60)
+            if idle_seconds >= stall_after_seconds and not current_tool:
+                prefix = "⚠️ Possibly stalled"
+                parts.append(f"no activity for {idle_mins} min")
+            elif idle_seconds >= 60:
+                parts.append(f"last activity {idle_mins} min ago")
+        except Exception:
+            pass
+    suffix = f" — {', '.join(parts)}" if parts else ""
+    return f"{prefix} — {elapsed_mins} min{suffix}"
+
+
 def render_notice_line(notice) -> str:
     """Render an AgentNotice to a single plaintext line for messaging platforms.
 
@@ -1099,13 +1155,21 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
+def _status_is_cleanup_eligible(status_key: str) -> bool:
+    """Keep durable task milestones after transient progress cleanup."""
+    return status_key != "milestone"
+
+
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
-    """Route a status message through adapter.send_or_update_status when supported.
+    """Route status updates while keeping verified milestones durable.
 
     Issue #30045: adapters that implement send_or_update_status (currently
     Telegram) edit the previous bubble for the same status_key instead of
-    appending a new one. Adapters without the method fall back to plain send.
+    appending a new one. Verified workflow milestones intentionally bypass
+    that edit rail: every completed top-level task remains visible in history.
     """
+    if status_key == "milestone":
+        return await adapter.send(chat_id, content, metadata=metadata)
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
@@ -5775,10 +5839,21 @@ class TurnRunner:
         ctx = self._ctx
         if not ctx._status_adapter or not ctx._run_still_current():
             return
+        platform_key = (
+            "cli"
+            if ctx.source.platform == Platform.LOCAL
+            else ctx.source.platform.value
+        )
+        display_message = _format_gateway_status_copy(
+            ctx.user_config,
+            platform_key,
+            event_type,
+            message,
+        )
         prepared_message = _prepare_gateway_status_message(
             ctx.source.platform,
             event_type,
-            message,
+            display_message,
         )
         if prepared_message is None:
             logger.debug(
@@ -5796,7 +5871,7 @@ class TurnRunner:
         )
         if _fut is None:
             return
-        if ctx._cleanup_progress:
+        if ctx._cleanup_progress and _status_is_cleanup_eligible(event_type):
             def _track_status_id(fut) -> None:
                 try:
                     res = fut.result()
@@ -30956,7 +31031,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # iteration counter is gated on busy_ack_detail so users
                 # who want it can opt in per platform.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
                 _want_iteration_detail = bool(
                     resolve_display_setting(
                         user_config,
@@ -30965,25 +31039,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         True,
                     )
                 )
-                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
-                    try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = []
-                        if _want_iteration_detail:
-                            _parts.append(
-                                f"iteration {_a['api_call_count']}/{_a['max_iterations']}"
-                            )
-                        _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                        if _action:
-                            _parts.append(str(_action))
-                        if _parts:
-                            _status_detail = " — " + ", ".join(_parts)
-                    except Exception:
-                        pass
                 _heartbeat_text = (
                     _generic_status_phrase("status")
                     if _long_running_mode == "generic"
-                    else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
+                    else _build_long_running_heartbeat(
+                        _agent_ref,
+                        elapsed_mins=_elapsed_mins,
+                        want_iteration_detail=_want_iteration_detail,
+                    )
                 )
                 try:
                     _notify_res = None

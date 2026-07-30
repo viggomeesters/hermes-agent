@@ -18,6 +18,7 @@ from pathlib import Path
 import logging
 import os
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -99,6 +100,90 @@ def _ensure_file_checkpoint(
     resolved_path = _resolve_path_for_task(file_path, effective_task_id or "default")
     work_dir = agent._checkpoint_mgr.get_working_dir_for_path(str(resolved_path))
     agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+
+
+_GO_FINISH_RE = re.compile(
+    r"(?:^|(?:&&|\|\||;|\n)\s*)"
+    r"(?:(?:\S*/)?go|go-workflow)\s+finish\s+"
+    r"([A-Za-z0-9][A-Za-z0-9._:-]*)"
+)
+_LEGACY_FINISH_RE = re.compile(
+    r"(?:^|(?:&&|\|\||;|\n)\s*)"
+    r"(?:python(?:3(?:\.\d+)?)?\s+)?(?:\S*/)?scripts/finish_task\.py\s+"
+    r"([A-Za-z0-9][A-Za-z0-9._:-]*)"
+)
+
+
+def _result_reports_success(function_result: Any, *, is_error: bool) -> bool:
+    """Return whether a tool result is safe to treat as a verified milestone."""
+    if is_error:
+        return False
+    if not isinstance(function_result, str):
+        return True
+    try:
+        payload = json.loads(function_result)
+    except (TypeError, ValueError):
+        return True
+    if not isinstance(payload, dict):
+        return True
+    if payload.get("success") is False:
+        return False
+    exit_code = payload.get("exit_code")
+    return exit_code in (None, 0)
+
+
+def _extract_verified_workflow_milestone(
+    function_name: str,
+    function_args: Any,
+    function_result: Any,
+    *,
+    is_error: bool,
+) -> str | None:
+    """Extract task completion from a successful workflow mutation tool call."""
+    if not _result_reports_success(function_result, is_error=is_error):
+        return None
+    args = function_args if isinstance(function_args, dict) else {}
+    task_id = None
+    if function_name == "terminal":
+        command = str(args.get("command") or "")
+        match = _GO_FINISH_RE.search(command) or _LEGACY_FINISH_RE.search(command)
+        if match:
+            task_id = match.group(1)
+    elif function_name == "kanban_complete":
+        task_id = args.get("task_id") or args.get("id")
+
+    if not task_id:
+        return None
+    normalized_task_id = str(task_id).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", normalized_task_id):
+        return None
+    return normalized_task_id
+
+
+def _emit_verified_workflow_milestone(
+    agent,
+    function_name: str,
+    function_args: Any,
+    function_result: Any,
+    *,
+    is_error: bool,
+) -> None:
+    """Best-effort bridge from verified workflow completion to UI status."""
+    callback = getattr(agent, "status_callback", None)
+    if callback is None:
+        return
+    message = _extract_verified_workflow_milestone(
+        function_name,
+        function_args,
+        function_result,
+        is_error=is_error,
+    )
+    if not message:
+        return
+    try:
+        callback("milestone", message)
+    except Exception:
+        logger.debug("verified workflow milestone delivery failed", exc_info=True)
 
 
 def _budget_for_agent(agent) -> BudgetConfig:
@@ -1806,6 +1891,24 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 except Exception as _ver_err:
                     logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
+            if not blocked and agent.tool_progress_callback:
+                try:
+                    agent.tool_progress_callback(
+                        "tool.completed", function_name, None, None,
+                        duration=tool_duration, is_error=is_error,
+                        result=function_result,
+                    )
+                except Exception as cb_err:
+                    logging.debug(f"Tool progress callback error: {cb_err}")
+
+            if not blocked:
+                _emit_verified_workflow_milestone(
+                    agent,
+                    function_name,
+                    function_args,
+                    function_result,
+                    is_error=is_error,
+                )
             if agent.verbose_logging:
                 logging.debug("Tool %s completed in %.2fs", function_name, tool_duration)
                 logging.debug("Tool result (%d chars): %s", len(function_result), function_result)
@@ -2730,6 +2833,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
 
+        if not _execution_blocked and agent.tool_progress_callback:
+            try:
+                agent.tool_progress_callback(
+                    "tool.completed", function_name, None, None,
+                    duration=tool_duration, is_error=_is_error_result,
+                    result=function_result,
+                )
+            except Exception as cb_err:
+                logging.debug(f"Tool progress callback error: {cb_err}")
+
+        if not _execution_blocked:
+            _emit_verified_workflow_milestone(
+                agent,
+                function_name,
+                function_args,
+                function_result,
+                is_error=_is_error_result,
+            )
         agent._current_tool = None
         _status_suffix = " (error)" if _is_error_result else ""
         agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
