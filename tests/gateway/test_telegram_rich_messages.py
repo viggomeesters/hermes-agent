@@ -175,6 +175,31 @@ async def test_oversized_content_skips_rich_and_chunks():
 
 
 @pytest.mark.asyncio
+async def test_long_table_report_uses_lossless_legacy_chunks():
+    adapter = _make_adapter()
+    body = "\n".join(
+        f"### Audit section {index}\nEvidence line {index}: " + ("x" * 140)
+        for index in range(1, 65)
+    )
+    report = "| Check | Status |\n|---|---|\n| Delivery | audit |\n\n" + body
+    report += "\n\n## Verificatie\nTAILSENTINELHERMESAUD012"
+    assert TelegramAdapter.MAX_MESSAGE_LENGTH < len(report)
+    assert len(report) < TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.send("12345", report)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    assert adapter._bot.send_message.await_count > 1
+    delivered = "\n".join(
+        call.kwargs["text"] for call in adapter._bot.send_message.await_args_list
+    )
+    assert "Audit section 1" in delivered
+    assert "Audit section 64" in delivered
+    assert "TAILSENTINELHERMESAUD012" in delivered
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "exc",
     [
@@ -629,10 +654,18 @@ def test_supports_draft_streaming_legacy_when_rich_messages_off():
 
 
 # ----------------------------------------------------------------------
-# streaming_overflow_limit: with rich on, the stream consumer may accumulate up
-# to the 32,768-char rich cap before splitting, so a reply that fits one
-# sendRichMessage / sendRichMessageDraft isn't fragmented at the 4,096 limit.
+# Keep streaming at Telegram's reliable 4,096-unit boundary so long rich
+# responses use lossless continuation chunks.
 # ----------------------------------------------------------------------
+
+def test_streaming_overflow_limit_stays_at_reliable_message_boundary():
+    adapter = _make_adapter()
+    assert adapter.streaming_overflow_limit() == TelegramAdapter.MAX_MESSAGE_LENGTH
+
+
+def test_streaming_overflow_limit_none_when_rich_opted_out():
+    adapter = _make_adapter(extra={"rich_messages": False})
+    assert adapter.streaming_overflow_limit() is None
 
 
 def test_streaming_overflow_limit_none_when_rich_latched_off():
