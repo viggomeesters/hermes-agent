@@ -6320,6 +6320,54 @@ class BasePlatformAdapter(ABC):
 
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    def _resolve_start_ack(self, event: MessageEvent) -> str | None:
+        """Return configured start-ack text for a fresh turn, or None.
+
+        ``display.start_ack`` is generic core machinery; persona wording lives
+        in config/overlays via ``display.platforms.<platform>.start_ack_text``.
+        """
+        if event.get_command():
+            return None
+        try:
+            from hermes_cli.config import load_config
+            from gateway.display_config import resolve_display_setting
+            user_config = load_config() or {}
+            platform_key = _platform_name(getattr(event.source, "platform", None))
+            enabled = resolve_display_setting(user_config, platform_key, "start_ack", False)
+            if isinstance(enabled, str):
+                enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+            if not enabled:
+                return None
+            text = resolve_display_setting(
+                user_config,
+                platform_key,
+                "start_ack_text",
+                "I’m on it.",
+            )
+            text = str(text or "").strip()
+            return text or None
+        except Exception as exc:
+            logger.debug("[%s] Failed to resolve start ack: %s", self.name, exc)
+            return None
+
+    async def _send_start_ack_if_configured(self, event: MessageEvent) -> None:
+        text = self._resolve_start_ack(event)
+        if not text:
+            return
+        reply_anchor = _reply_anchor_for_event(event)
+        metadata = _mark_notify_metadata(_thread_metadata_for_source(event.source, reply_anchor))
+        try:
+            await self._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=text,
+                reply_to=reply_anchor,
+                metadata=metadata,
+                max_retries=1,
+            )
+            logger.info("[%s] Sent start ack for %s", self.name, event.source.chat_id)
+        except Exception as exc:
+            logger.debug("[%s] Failed to send start ack: %s", self.name, exc)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -6528,6 +6576,8 @@ class BasePlatformAdapter(ABC):
                 )
             return  # Don't process now - will be handled after current task finishes
         
+        await self._send_start_ack_if_configured(event)
+
         # Mark session as active BEFORE spawning background task to close
         # the race window where a second message arriving before the task
         # starts would also pass the _active_sessions check and spawn a
