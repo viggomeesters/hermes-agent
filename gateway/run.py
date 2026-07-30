@@ -962,6 +962,34 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# OpenAI's renderer uses private-use Unicode delimiters for symbolic source
+# references. They are useful only when a client also receives the matching URL
+# annotations. Chat adapters currently receive plain text, so an unmapped marker
+# such as ``citeturn3search0`` otherwise leaks as ugly internal syntax.
+# Match complete markers only: malformed/partial text is left untouched rather
+# than risking deletion of adjacent user-visible prose.
+_GATEWAY_CITATION_TRANSPORT_RE = re.compile(
+    r"(?P<before>[ \t]*)\ue200cite(?:\ue202[^\ue200\ue201\ue202\s]+)+\ue201(?P<after>[ \t]*)"
+)
+
+
+def _strip_unrenderable_citation_transport_markers(text: str) -> str:
+    """Remove complete symbolic citation markers while preserving prose spacing."""
+
+    def _replace(match: re.Match[str]) -> str:
+        left = text[match.start() - 1] if match.start() else ""
+        right = text[match.end()] if match.end() < len(text) else ""
+
+        # When a marker sits between two prose fragments, retain exactly one
+        # separator. At line/end boundaries or before punctuation no separator
+        # is needed. The pattern consumes horizontal whitespace only, so
+        # Markdown layout and newlines remain byte-for-byte intact.
+        if left and right and left not in "\r\n" and right not in "\r\n.,;:!?)]}":
+            return " "
+        return ""
+
+    return _GATEWAY_CITATION_TRANSPORT_RE.sub(_replace, text)
+
 
 def _looks_like_gateway_provider_error(text: str) -> bool:
     """True when text is infrastructure/provider failure, not normal content.
@@ -1020,6 +1048,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _strip_unrenderable_citation_transport_markers(redacted)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
