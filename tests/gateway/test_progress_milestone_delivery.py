@@ -6,6 +6,7 @@ import pytest
 from gateway.run import (
     _build_long_running_heartbeat,
     _format_gateway_status_copy,
+    _send_long_running_heartbeat_coro,
     _send_or_update_status_coro,
     _status_is_cleanup_eligible,
 )
@@ -54,6 +55,7 @@ async def test_heartbeat_is_a_durable_separate_message():
         "heartbeat",
         "⏳ Working — 10 min",
         {"thread_id": "topic-7"},
+        append_only_heartbeat=True,
     )
 
     adapter.send.assert_awaited_once_with(
@@ -62,7 +64,90 @@ async def test_heartbeat_is_a_durable_separate_message():
         metadata={"thread_id": "topic-7"},
     )
     adapter.send_or_update_status.assert_not_awaited()
-    assert _status_is_cleanup_eligible("heartbeat") is False
+    assert _status_is_cleanup_eligible(
+        "heartbeat", append_only_heartbeat=True
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_non_telegram_heartbeat_keeps_edit_in_place_rail():
+    adapter = type("Adapter", (), {})()
+    adapter.send = AsyncMock()
+    adapter.send_or_update_status = AsyncMock(
+        return_value=type("Result", (), {"success": True})()
+    )
+
+    await _send_or_update_status_coro(
+        adapter,
+        "chat-1",
+        "heartbeat",
+        "⏳ Working — 10 min",
+        {"thread_id": "thread-7"},
+        append_only_heartbeat=False,
+    )
+
+    adapter.send_or_update_status.assert_awaited_once_with(
+        "chat-1",
+        "heartbeat",
+        "⏳ Working — 10 min",
+        metadata={"thread_id": "thread-7"},
+    )
+    adapter.send.assert_not_awaited()
+    assert _status_is_cleanup_eligible(
+        "heartbeat", append_only_heartbeat=False
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_long_running_telegram_heartbeat_always_sends_new_message():
+    adapter = type("Adapter", (), {})()
+    adapter.send = AsyncMock(
+        return_value=type("Result", (), {"success": True, "message_id": "new-8"})()
+    )
+    adapter.edit_message = AsyncMock()
+
+    result, message_id = await _send_long_running_heartbeat_coro(
+        adapter,
+        "chat-1",
+        "⏳ Working — 30 min",
+        {"thread_id": "topic-7"},
+        append_only=True,
+        message_id="old-7",
+    )
+
+    assert result.success is True
+    assert message_id is None
+    adapter.send.assert_awaited_once_with(
+        "chat-1",
+        "⏳ Working — 30 min",
+        metadata={"thread_id": "topic-7"},
+    )
+    adapter.edit_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_long_running_non_telegram_heartbeat_edits_existing_message():
+    adapter = type("Adapter", (), {})()
+    adapter.send = AsyncMock()
+    adapter.edit_message = AsyncMock(
+        return_value=type("Result", (), {"success": True, "message_id": "old-7"})()
+    )
+
+    result, message_id = await _send_long_running_heartbeat_coro(
+        adapter,
+        "chat-1",
+        "⏳ Working — 30 min",
+        {"thread_id": "thread-7"},
+        append_only=False,
+        message_id="old-7",
+    )
+
+    assert result.success is True
+    assert message_id == "old-7"
+    adapter.edit_message.assert_awaited_once_with(
+        "chat-1", "old-7", "⏳ Working — 30 min"
+    )
+    adapter.send.assert_not_awaited()
 
 
 def test_heartbeat_reports_last_real_activity_and_current_action():

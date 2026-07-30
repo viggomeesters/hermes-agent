@@ -722,26 +722,75 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
-def _status_is_cleanup_eligible(status_key: str) -> bool:
-    """Keep append-only evidence messages after transient progress cleanup."""
-    return status_key not in {"heartbeat", "milestone"}
+def _status_is_cleanup_eligible(
+    status_key: str,
+    *,
+    append_only_heartbeat: bool = False,
+) -> bool:
+    """Keep durable evidence while preserving transient non-Telegram cleanup."""
+    if status_key == "milestone":
+        return False
+    if status_key == "heartbeat" and append_only_heartbeat:
+        return False
+    return True
 
 
-async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
-    """Route status updates while keeping runtime evidence append-only.
+async def _send_or_update_status_coro(
+    adapter,
+    chat_id,
+    status_key,
+    content,
+    metadata,
+    *,
+    append_only_heartbeat: bool = False,
+):
+    """Route status updates with Telegram heartbeat evidence append-only.
 
     Issue #30045: adapters that implement send_or_update_status (currently
     Telegram) edit the previous bubble for the same status_key instead of
-    appending a new one. Heartbeats and verified workflow milestones
-    intentionally bypass that edit rail so each event retains its real
-    platform timestamp and remains visible in history.
+    appending a new one. Verified workflow milestones always bypass that edit
+    rail. Telegram/Bertus heartbeats do so when append_only_heartbeat is set;
+    other platforms retain their existing edit-in-place behavior.
     """
-    if status_key in {"heartbeat", "milestone"}:
+    if status_key == "milestone" or (
+        status_key == "heartbeat" and append_only_heartbeat
+    ):
         return await adapter.send(chat_id, content, metadata=metadata)
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
     return await adapter.send(chat_id, content, metadata=metadata)
+
+
+async def _send_long_running_heartbeat_coro(
+    adapter,
+    chat_id,
+    content,
+    metadata,
+    *,
+    append_only: bool,
+    message_id: Optional[str] = None,
+):
+    """Send Telegram evidence or preserve another platform's editable heartbeat."""
+    if append_only:
+        return await adapter.send(chat_id, content, metadata=metadata), None
+
+    result = None
+    if message_id:
+        try:
+            result = await adapter.edit_message(chat_id, message_id, content)
+        except Exception as exc:
+            logger.debug("Heartbeat edit failed: %s", exc)
+    if result and getattr(result, "success", False):
+        return result, message_id
+
+    result = await adapter.send(chat_id, content, metadata=metadata)
+    next_message_id = (
+        str(result.message_id)
+        if getattr(result, "success", False) and getattr(result, "message_id", None)
+        else None
+    )
+    return result, next_message_id
 
 
 def _resolve_progress_thread_id(
@@ -753,11 +802,8 @@ def _resolve_progress_thread_id(
 ) -> Optional[str]:
     """Return thread/root ID that progress/status bubbles should target.
 
-    ``reply_in_thread=False`` (Slack ``platforms.slack.extra.reply_in_thread``)
-    disables the synthetic-thread fallback: progress messages must not create
-    a thread the final flat reply would then inherit. A source.thread_id equal
-    to the event's own message id is the adapter's synthetic session-keying
-    thread, not a real thread — treat it as "no thread" too (#18859).
+    ``reply_in_thread=False`` disables the synthetic-thread fallback so
+    progress cannot create a thread that a flat final reply would inherit.
     """
     platform_value = getattr(platform, "value", platform)
     platform_key = str(platform_value or "").lower()
@@ -4166,15 +4212,26 @@ class TurnRunner:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
+        append_only_heartbeat = ctx.source.platform == Platform.TELEGRAM
         _fut = safe_schedule_threadsafe(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
+            _send_or_update_status_coro(
+                ctx._status_adapter,
+                ctx._status_chat_id,
+                event_type,
+                prepared_message,
+                ctx._status_thread_metadata,
+                append_only_heartbeat=append_only_heartbeat,
+            ),
             ctx._loop_for_step,
             logger=logger,
             log_message=f"status_callback ({event_type}) scheduling error",
         )
         if _fut is None:
             return
-        if ctx._cleanup_progress and _status_is_cleanup_eligible(event_type):
+        if ctx._cleanup_progress and _status_is_cleanup_eligible(
+            event_type,
+            append_only_heartbeat=append_only_heartbeat,
+        ):
             def _track_status_id(fut) -> None:
                 try:
                     res = fut.result()
@@ -23924,6 +23981,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _notify_adapter = self._adapter_for_source(source)
             if not _notify_adapter:
                 return
+            _heartbeat_msg_id: Optional[str] = None
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
                 # Stop heartbeating once this run no longer owns the session
@@ -23964,16 +24022,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 )
                 try:
-                    await _send_or_update_status_coro(
-                        _notify_adapter,
-                        source.chat_id,
-                        "heartbeat",
-                        _heartbeat_text,
-                        _non_conversational_metadata(
-                            _status_thread_metadata,
-                            platform=source.platform,
-                        ),
+                    _append_only_heartbeat = source.platform == Platform.TELEGRAM
+                    _notify_res, _next_heartbeat_msg_id = (
+                        await _send_long_running_heartbeat_coro(
+                            _notify_adapter,
+                            source.chat_id,
+                            _heartbeat_text,
+                            _non_conversational_metadata(
+                                _status_thread_metadata,
+                                platform=source.platform,
+                            ),
+                            append_only=_append_only_heartbeat,
+                            message_id=_heartbeat_msg_id,
+                        )
                     )
+                    if _next_heartbeat_msg_id != _heartbeat_msg_id:
+                        _heartbeat_msg_id = _next_heartbeat_msg_id
+                        if _cleanup_progress and _heartbeat_msg_id:
+                            _cleanup_msg_ids.append(_heartbeat_msg_id)
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
