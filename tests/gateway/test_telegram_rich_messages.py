@@ -173,6 +173,31 @@ async def test_oversized_content_skips_rich_and_chunks():
 
 
 @pytest.mark.asyncio
+async def test_long_table_report_uses_lossless_legacy_chunks():
+    adapter = _make_adapter()
+    body = "\n".join(
+        f"### Audit section {index}\nEvidence line {index}: " + ("x" * 140)
+        for index in range(1, 65)
+    )
+    report = "| Check | Status |\n|---|---|\n| Delivery | audit |\n\n" + body
+    report += "\n\n## Verificatie\nTAILSENTINELHERMESAUD012"
+    assert TelegramAdapter.MAX_MESSAGE_LENGTH < len(report)
+    assert len(report) < TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.send("12345", report)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    assert adapter._bot.send_message.await_count > 1
+    delivered = "\n".join(
+        call.kwargs["text"] for call in adapter._bot.send_message.await_args_list
+    )
+    assert "Audit section 1" in delivered
+    assert "Audit section 64" in delivered
+    assert "TAILSENTINELHERMESAUD012" in delivered
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "exc",
     [
@@ -385,10 +410,18 @@ def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
 
 
 # ----------------------------------------------------------------------
-# streaming_overflow_limit: with rich on, the stream consumer may accumulate up
-# to the 32,768-char rich cap before splitting, so a reply that fits one
-# sendRichMessage / sendRichMessageDraft isn't fragmented at the 4,096 limit.
+# Keep streaming at Telegram's reliable 4,096-unit boundary so long rich
+# responses use lossless continuation chunks.
 # ----------------------------------------------------------------------
+
+def test_streaming_overflow_limit_stays_at_reliable_message_boundary():
+    adapter = _make_adapter()
+    assert adapter.streaming_overflow_limit() == TelegramAdapter.MAX_MESSAGE_LENGTH
+
+
+def test_streaming_overflow_limit_none_when_rich_opted_out():
+    adapter = _make_adapter(extra={"rich_messages": False})
+    assert adapter.streaming_overflow_limit() is None
 
 
 def test_streaming_overflow_limit_none_when_rich_latched_off():
@@ -431,6 +464,29 @@ async def test_finalize_edit_uses_rich_for_table_content():
     # No fresh send / delete — the whole point of the in-place rich edit.
     adapter._bot.edit_message_text.assert_not_called()
     adapter._bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_long_rich_table_splits_losslessly():
+    adapter = _make_adapter()
+    big_table = "| a | b |\n|---|---|\n" + "\n".join(
+        f"| {'x' * 50} | {'y' * 50} |" for _ in range(40)
+    )
+    big_table += "\n| TAILSENTINEL | COMPLETE |"
+    assert TelegramAdapter.MAX_MESSAGE_LENGTH < len(big_table)
+    assert len(big_table) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.edit_message("12345", "555", big_table, finalize=True)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited_once()
+    assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
+    delivered = "\n".join(
+        [adapter._bot.edit_message_text.await_args.kwargs["text"]]
+        + [call.kwargs["text"] for call in adapter._bot.send_message.await_args_list]
+    )
+    assert "TAILSENTINEL" in delivered
 
 
 @pytest.mark.asyncio
@@ -553,5 +609,3 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
-
-
