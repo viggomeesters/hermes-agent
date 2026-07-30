@@ -1110,8 +1110,14 @@ def _build_long_running_heartbeat(
     elapsed_mins: int,
     want_iteration_detail: bool,
     stall_after_seconds: float = 900.0,
+    updated_at: Optional[datetime] = None,
 ) -> str:
-    """Build an evidence-bearing heartbeat from the live agent activity clock."""
+    """Build a heartbeat whose freshness stays legible after message edits.
+
+    Telegram preserves the original message timestamp when a heartbeat is
+    edited in place.  Include the actual refresh clock in the text so an old
+    bubble timestamp cannot be mistaken for stale runtime state.
+    """
     prefix = "⏳ Working"
     parts: list[str] = []
     if agent is not None and hasattr(agent, "get_activity_summary"):
@@ -1136,8 +1142,18 @@ def _build_long_running_heartbeat(
                 parts.append(f"last activity {idle_mins} min ago")
         except Exception:
             pass
+    elapsed_mins = max(0, int(elapsed_mins))
+    elapsed_hours, elapsed_remainder = divmod(elapsed_mins, 60)
+    if elapsed_hours:
+        elapsed_text = f"{elapsed_hours}h"
+        if elapsed_remainder:
+            elapsed_text += f" {elapsed_remainder}m"
+    else:
+        elapsed_text = f"{elapsed_remainder} min"
+    refresh_clock = updated_at or datetime.now().astimezone()
+    freshness = f"updated {refresh_clock:%H:%M}"
     suffix = f" — {', '.join(parts)}" if parts else ""
-    return f"{prefix} — {elapsed_mins} min{suffix}"
+    return f"{prefix} — {elapsed_text} — {freshness}{suffix}"
 
 
 def render_notice_line(notice) -> str:
