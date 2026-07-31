@@ -701,6 +701,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
+from gateway.turn_latency import begin_turn, finish_turn, mark_turn_phase
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 if TYPE_CHECKING:
@@ -6370,6 +6371,7 @@ class BasePlatformAdapter(ABC):
                 metadata=metadata,
                 max_retries=1,
             )
+            mark_turn_phase(event.source, event.message_id, "ack")
             logger.info("[%s] Sent start ack for %s", self.name, event.source.chat_id)
         except Exception as exc:
             logger.debug("[%s] Failed to send start ack: %s", self.name, exc)
@@ -6582,6 +6584,7 @@ class BasePlatformAdapter(ABC):
                 )
             return  # Don't process now - will be handled after current task finishes
         
+        begin_turn(event.source, event.message_id)
         await self._send_start_ack_if_configured(event)
 
         # Mark session as active BEFORE spawning background task to close
@@ -7192,6 +7195,11 @@ class BasePlatformAdapter(ABC):
                 event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
             )
+            finish_turn(
+                event.source,
+                event.message_id,
+                "success" if processing_ok else "failure",
+            )
 
             # The active drain owns debounce state. If a queue-mode timer has
             # not fired yet, force-flush into _pending_messages here and let
@@ -7243,9 +7251,11 @@ class BasePlatformAdapter(ABC):
             if current_task is None or current_task not in self._expected_cancelled_tasks:
                 outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, outcome)
+            finish_turn(event.source, event.message_id, outcome.value)
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            finish_turn(event.source, event.message_id, "failure")
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:

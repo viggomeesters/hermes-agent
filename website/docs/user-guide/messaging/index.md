@@ -464,6 +464,20 @@ display:
 
 Phrase files map a surface (`status`, `generic`) to a list of strings (max 80 phrases per surface, 160 chars each). Absolute paths and `..` escapes are ignored so config stays profile-portable. Only your configured phrase strings are used — raw tool arguments, commands, and reasoning text are never interpolated into a status phrase.
 
+For an earlier one-time warning when a turn has not produced any visible tool
+or interim-assistant progress, configure a first deadline separately from the
+recurring heartbeat:
+
+```yaml
+agent:
+  gateway_first_notify_delay: 60  # one warning after 60s of visible silence
+  gateway_notify_interval: 600    # recurring heartbeats remain anchored to turn start
+```
+
+Visible tool or interim-assistant progress suppresses the first warning. The
+regular heartbeat still runs at `gateway_notify_interval`; setting only that
+existing key preserves the historical behavior.
+
 ### Message timestamps in model context
 
 Off by default. When enabled, Hermes prepends a human-readable timestamp
