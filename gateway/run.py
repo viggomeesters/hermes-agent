@@ -5040,7 +5040,6 @@ class TurnRunner:
         if ctx.progress_mode == "verbose":
             if _code_block_full is not None:
                 ctx.last_was_terminal_block[0] = True
-                _mark_visible_turn_progress(ctx)
                 ctx.progress_queue.put(_code_block_full)
                 return
             ctx.last_was_terminal_block[0] = False
@@ -5058,7 +5057,6 @@ class TurnRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            _mark_visible_turn_progress(ctx)
             ctx.progress_queue.put(msg)
             return
 
@@ -5422,7 +5420,9 @@ class TurnRunner:
                 kwargs["finalize"] = True
             if _edit_accepts_metadata:
                 kwargs["metadata"] = ctx._progress_metadata
-            return await adapter.edit_message(**kwargs)
+            result = await adapter.edit_message(**kwargs)
+            _track_progress_result(result)
+            return result
 
         def _progress_text(lines: list) -> str:
             return "\n".join(str(line) for line in lines)
@@ -5443,6 +5443,8 @@ class TurnRunner:
             return groups
 
         def _track_progress_result(result) -> None:
+            if getattr(result, "success", False):
+                _mark_visible_turn_progress(ctx)
             if (
                 ctx._cleanup_progress
                 and getattr(result, "success", False)
@@ -5612,6 +5614,7 @@ class TurnRunner:
                             reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
                         )
+                        _track_progress_result(_flood_result)
                         if (
                             ctx._cleanup_progress
                             and getattr(_flood_result, "success", False)
@@ -5636,6 +5639,7 @@ class TurnRunner:
                             reply_to=ctx._progress_reply_to,
                             metadata=ctx._progress_metadata,
                         )
+                    _track_progress_result(result)
                     if result.success and result.message_id:
                         progress_msg_id = result.message_id
                         if ctx._cleanup_progress:
