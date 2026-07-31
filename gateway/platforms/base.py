@@ -6345,6 +6345,12 @@ class BasePlatformAdapter(ABC):
                 "I’m on it.",
             )
             text = str(text or "").strip()
+            if "{scope}" in text:
+                raw_scope = getattr(event, "text", "") or ""
+                scope = " ".join(str(raw_scope).split()) or "bericht verwerken"
+                if len(scope) > 100:
+                    scope = scope[:97].rstrip() + "..."
+                text = text.replace("{scope}", scope)
             return text or None
         except Exception as exc:
             logger.debug("[%s] Failed to resolve start ack: %s", self.name, exc)
