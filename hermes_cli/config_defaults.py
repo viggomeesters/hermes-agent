@@ -1539,6 +1539,8 @@ DEFAULT_CONFIG = {
             "last_lines": 2,
         },
         "interim_assistant_messages": True,  # Gateway: send natural mid-turn assistant status messages. Desktop: keep mid-turn narration between tool calls instead of collapsing to the final message.
+        "operation_cards": False,  # Gateway: maintain one editable long-running task card with measured delta/ETA.
+        "operation_card_stall_seconds": 600,  # Zero-delta window before the card reports a stall.
         # Codex Responses models narrate progress in a dedicated commentary
         # channel. When true (default), completed commentary messages are
         # delivered as visible mid-turn updates via the interim message path.

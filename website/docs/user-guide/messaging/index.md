@@ -478,6 +478,28 @@ Visible tool or interim-assistant progress suppresses the first warning. The
 regular heartbeat still runs at `gateway_notify_interval`; setting only that
 existing key preserves the historical behavior.
 
+Enable `display.operation_cards` globally or per platform to replace recurring
+long-run heartbeat messages with one editable operation card. The card shows
+the canonical phase, measured counter delta, ETA when a total and positive rate
+exist, and the worker/session identity. Tool breadcrumbs stay on their existing
+persistent progress path and are never deleted by card updates.
+
+```yaml
+display:
+  operation_card_stall_seconds: 600
+  platforms:
+    telegram:
+      operation_cards: true
+```
+
+Progress providers register with
+`gateway.operation_card.register_progress_provider()` and return a
+`ProgressSnapshot`. Hermes includes a process-registry provider based on
+monotonic emitted-output characters. A live PID without counter movement is not
+reported as progress: after the configured window the card says
+`geen meetbare voortgang`. Missing totals and counter resets degrade to
+`ETA: onbekend` instead of inventing an estimate.
+
 ### Message timestamps in model context
 
 Off by default. When enabled, Hermes prepends a human-readable timestamp

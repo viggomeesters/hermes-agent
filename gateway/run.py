@@ -30415,6 +30415,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return "generic" if allow_generic else "off"
             return "raw" if bool(value) else "off"
 
+        _operation_cards_enabled = (
+            _gateway_platform_value(source.platform) != "webhook"
+            and _display_surface_mode("operation_cards", default=False) != "off"
+        )
+        try:
+            _operation_card_stall_seconds = max(
+                1.0,
+                float(resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "operation_card_stall_seconds",
+                    600,
+                )),
+            )
+        except (TypeError, ValueError):
+            _operation_card_stall_seconds = 600.0
+
         def _generic_status_phrase(kind: str, *, tool_name: str | None = None, preview: str | None = None, args: Any = None) -> str:
             try:
                 return choose_status_phrase(
@@ -31057,6 +31074,65 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _long_running_mode == "off":
             _NOTIFY_INTERVAL = None
         _notify_start = time.time()
+        _operation_card_message_id: list[Optional[str]] = [None]
+        if _operation_cards_enabled:
+            from gateway.operation_card import (
+                ProgressContext,
+                ProgressTracker,
+                collect_progress_snapshot,
+                render_operation_card,
+            )
+            _operation_tracker = ProgressTracker(
+                stall_after=_operation_card_stall_seconds
+            )
+        else:
+            _operation_tracker = None
+
+        def _operation_card_text(agent_ref, *, status: str = "running") -> str:
+            activity = {}
+            if agent_ref is not None:
+                try:
+                    activity = agent_ref.get_activity_summary() or {}
+                except Exception:
+                    activity = {}
+            phase = (
+                activity.get("current_tool")
+                or activity.get("last_activity_desc")
+                or activity.get("description")
+                or "agent actief"
+            )
+            agent_task_id = str(getattr(agent_ref, "task_id", "") or "")
+            snapshot = collect_progress_snapshot(ProgressContext(
+                session_key=session_key,
+                task_id=agent_task_id,
+                fallback_phase=str(phase),
+                fallback_worker=f"agent:{str(session_id)[:12]}",
+            ))
+            if snapshot.current is None and activity.get("api_call_count") is not None:
+                from dataclasses import replace
+                snapshot = replace(
+                    snapshot,
+                    current=float(activity["api_call_count"]),
+                    total=None,
+                    unit="model calls",
+                    started_at=_notify_start,
+                    sampled_at=time.time(),
+                )
+            effective_status = status
+            if (
+                status == "completed"
+                and str(snapshot.worker_id).startswith("proc_")
+                and snapshot.status == "running"
+            ):
+                effective_status = "running"
+            if effective_status != snapshot.status:
+                from dataclasses import replace
+                snapshot = replace(
+                    snapshot,
+                    status=effective_status,
+                    sampled_at=time.time(),
+                )
+            return render_operation_card(_operation_tracker.observe(snapshot))
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -31064,7 +31140,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _notify_adapter = self._adapter_for_source(source)
             if not _notify_adapter:
                 return
-            _heartbeat_msg_id: Optional[str] = None
+            _heartbeat_msg_id: Optional[str] = _operation_card_message_id[0]
             _has_early_deadline = (
                 0 < _FIRST_NOTIFY_DELAY < _NOTIFY_INTERVAL
             )
@@ -31108,16 +31184,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not turn_ctx.first_progress_deadline.should_notify():
                         continue
                     _heartbeat_text = (
-                        "⏳ 1 min — run is actief; nog geen tool of inhoudelijke tussenstatus"
+                        _operation_card_text(_agent_ref)
+                        if _operation_cards_enabled
+                        else "⏳ 1 min — run is actief; nog geen tool of inhoudelijke tussenstatus"
                     )
                 else:
                     _heartbeat_text = (
-                        _generic_status_phrase("status")
-                        if _long_running_mode == "generic"
-                        else _build_long_running_heartbeat(
-                            _agent_ref,
-                            elapsed_mins=_elapsed_mins,
-                            want_iteration_detail=_want_iteration_detail,
+                        _operation_card_text(_agent_ref)
+                        if _operation_cards_enabled
+                        else (
+                            _generic_status_phrase("status")
+                            if _long_running_mode == "generic"
+                            else _build_long_running_heartbeat(
+                                _agent_ref,
+                                elapsed_mins=_elapsed_mins,
+                                want_iteration_detail=_want_iteration_detail,
+                            )
                         )
                     )
                 try:
@@ -31942,6 +32024,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "background turn task failed during cleanup",
                             exc_info=True,
                         )
+
+            if _operation_cards_enabled and _operation_card_message_id[0]:
+                try:
+                    if (
+                        _interrupt_detected.is_set()
+                        or _executor_task.cancelled()
+                        or not _executor_task.done()
+                    ):
+                        _card_final_status = "interrupted"
+                    elif _executor_task.done() and _executor_task.exception() is not None:
+                        _card_final_status = "failed"
+                    else:
+                        _card_result = result_holder[0]
+                        _card_final_status = (
+                            "failed"
+                            if isinstance(_card_result, dict) and _card_result.get("failed")
+                            else "completed"
+                        )
+                    _card_adapter = self._adapter_for_source(source)
+                    if _card_adapter is not None:
+                        await _send_long_running_heartbeat_coro(
+                            _card_adapter,
+                            source.chat_id,
+                            _operation_card_text(
+                                agent_holder[0],
+                                status=_card_final_status,
+                            ),
+                            _non_conversational_metadata(
+                                _status_thread_metadata,
+                                platform=source.platform,
+                            ),
+                            append_only=False,
+                            message_id=_operation_card_message_id[0],
+                        )
+                except Exception as _card_final_err:
+                    logger.debug("Final operation-card update failed: %s", _card_final_err)
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
