@@ -105,6 +105,8 @@ class ProcessSession:
     completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
     termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
+    output_chars_total: int = 0                 # Monotonic emitted-character counter
+    last_output_at: float = 0.0                 # Wall clock of latest output delta
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
@@ -906,12 +908,16 @@ class ProcessRegistry:
                 session.completion_reason = "failed_start"
                 session.termination_source = "failed_start"
                 session.output_buffer = result.get("output", "").strip()
+                session.output_chars_total = len(session.output_buffer)
+                session.last_output_at = time.time() if session.output_buffer else 0.0
         except Exception as e:
             session.exited = True
             session.exit_code = -1
             session.completion_reason = "failed_start"
             session.termination_source = "failed_start"
             session.output_buffer = f"Failed to start: {e}"
+            session.output_chars_total = len(session.output_buffer)
+            session.last_output_at = time.time()
 
         if not session.exited:
             # Start a poller thread that periodically reads the log file
@@ -968,6 +974,9 @@ class ProcessRegistry:
                 first_chunk = False
             with session._lock:
                 session.output_buffer += chunk
+                session.output_chars_total += len(chunk)
+                if chunk:
+                    session.last_output_at = time.time()
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
             self._check_watch_patterns(session, chunk)
@@ -1063,10 +1072,19 @@ class ProcessRegistry:
                 new_output = result.get("output", "")
                 if new_output:
                     # Compute delta for watch pattern scanning
-                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
+                    if len(new_output) < prev_output_len:
+                        # Remote log was truncated/rotated. Treat the new body
+                        # as fresh output rather than freezing the monotonic
+                        # progress counter until it grows past the old length.
+                        delta = new_output
+                    else:
+                        delta = new_output[prev_output_len:]
                     prev_output_len = len(new_output)
                     with session._lock:
                         session.output_buffer = new_output
+                        session.output_chars_total += len(delta)
+                        if delta:
+                            session.last_output_at = time.time()
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     if delta:
@@ -1117,6 +1135,9 @@ class ProcessRegistry:
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
                         with session._lock:
                             session.output_buffer += text
+                            session.output_chars_total += len(text)
+                            if text:
+                                session.last_output_at = time.time()
                             if len(session.output_buffer) > session.max_output_chars:
                                 session.output_buffer = session.output_buffer[-session.max_output_chars:]
                         self._check_watch_patterns(session, text)
@@ -1386,6 +1407,8 @@ class ProcessRegistry:
         with session._lock:
             if drained:
                 session.output_buffer += drained
+                session.output_chars_total += len(drained)
+                session.last_output_at = time.time()
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
@@ -1804,6 +1827,8 @@ class ProcessRegistry:
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "output_chars_total": s.output_chars_total,
+                "last_output_at": s.last_output_at,
             }
             # Flag processes surfaced only because they share the gateway
             # session (not the current task) — these are the long-lived
@@ -1976,6 +2001,8 @@ class ProcessRegistry:
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
+                            "output_chars_total": s.output_chars_total,
+                            "last_output_at": s.last_output_at,
                             "watch_patterns": s.watch_patterns,
                         })
             
@@ -2054,6 +2081,8 @@ class ProcessRegistry:
                 watcher_message_id=entry.get("watcher_message_id", ""),
                 watcher_interval=entry.get("watcher_interval", 0),
                 notify_on_complete=entry.get("notify_on_complete", False),
+                output_chars_total=int(entry.get("output_chars_total") or 0),
+                last_output_at=float(entry.get("last_output_at") or 0),
                 watch_patterns=entry.get("watch_patterns", []),
             )
             with self._lock:

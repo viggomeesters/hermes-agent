@@ -150,6 +150,74 @@ async def test_long_running_non_telegram_heartbeat_edits_existing_message():
     adapter.send.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_operation_card_failed_edit_falls_back_to_one_new_card():
+    adapter = type("Adapter", (), {})()
+    adapter.edit_message = AsyncMock(
+        return_value=type("Result", (), {"success": False, "message_id": None})()
+    )
+    adapter.send = AsyncMock(
+        return_value=type("Result", (), {"success": True, "message_id": "card-2"})()
+    )
+
+    result, message_id = await _send_long_running_heartbeat_coro(
+        adapter,
+        "chat-1",
+        "⚙️ Operatie\nStatus: 🟢 actief",
+        {"thread_id": "topic-7"},
+        append_only=False,
+        message_id="card-1",
+    )
+
+    assert result.success is True
+    assert message_id == "card-2"
+    adapter.edit_message.assert_awaited_once_with(
+        "chat-1", "card-1", "⚙️ Operatie\nStatus: 🟢 actief"
+    )
+    adapter.send.assert_awaited_once_with(
+        "chat-1",
+        "⚙️ Operatie\nStatus: 🟢 actief",
+        metadata={"thread_id": "topic-7"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_operation_card_updates_without_deleting_append_only_breadcrumb():
+    adapter = type("Adapter", (), {})()
+    adapter.send = AsyncMock(
+        side_effect=[
+            type("Result", (), {"success": True, "message_id": "card-1"})(),
+            type("Result", (), {"success": True, "message_id": "crumb-1"})(),
+        ]
+    )
+    adapter.edit_message = AsyncMock(
+        return_value=type("Result", (), {"success": True, "message_id": "card-1"})()
+    )
+
+    _, card_id = await _send_long_running_heartbeat_coro(
+        adapter,
+        "chat-1",
+        "⚙️ Operatie\nVoortgang: 1/2",
+        {},
+        append_only=False,
+    )
+    await adapter.send("chat-1", "🔧 terminal: batch 1")
+    _, updated_id = await _send_long_running_heartbeat_coro(
+        adapter,
+        "chat-1",
+        "⚙️ Operatie\nVoortgang: 2/2",
+        {},
+        append_only=False,
+        message_id=card_id,
+    )
+
+    assert updated_id == "card-1"
+    assert adapter.send.await_count == 2
+    adapter.edit_message.assert_awaited_once_with(
+        "chat-1", "card-1", "⚙️ Operatie\nVoortgang: 2/2"
+    )
+
+
 def test_heartbeat_reports_last_real_activity_and_current_action():
     agent = type("Agent", (), {})()
     agent.get_activity_summary = lambda: {
