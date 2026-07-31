@@ -243,6 +243,8 @@ These variables configure the [Tool Gateway](/user-guide/features/tool-gateway) 
 | `TERMINAL_DAYTONA_IMAGE` | Daytona sandbox image |
 | `TERMINAL_VERCEL_RUNTIME` | Vercel Sandbox runtime (`node24`, `node22`, `python3.13`) |
 | `TERMINAL_TIMEOUT` | Command timeout in seconds |
+| `TERMINAL_FOREGROUND_HANDOFF_BUDGET` | Gateway foreground budget for eligible non-interactive local commands with an explicit longer timeout (default: `120` seconds; `0` disables automatic tracked handoff). |
+| `TERMINAL_MAX_FOREGROUND_TIMEOUT` | Hard cap for an explicitly requested foreground timeout (default: `600` seconds). |
 | `TERMINAL_LIFETIME_SECONDS` | Max lifetime for terminal sessions in seconds |
 | `TERMINAL_CWD` | Deprecated direct override for gateway/cron terminal sessions. Prefer `terminal.cwd` in `config.yaml`; CLI still uses the launch directory. |
 | `SUDO_PASSWORD` | Enable sudo without interactive prompt |

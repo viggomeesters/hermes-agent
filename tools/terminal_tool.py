@@ -114,6 +114,48 @@ FOREGROUND_MAX_TIMEOUT = _safe_parse_import_env(
     "integer",
 )
 
+# Eligible local commands may execute as tracked processes from the start. If
+# they outlive this user-visible foreground budget, the process keeps running
+# and the tool returns its durable handle instead of killing it or blocking the
+# chat. 0 disables automatic handoff.
+FOREGROUND_HANDOFF_BUDGET = _safe_parse_import_env(
+    "TERMINAL_FOREGROUND_HANDOFF_BUDGET",
+    120.0,
+    float,
+    "number",
+)
+
+
+_STATEFUL_OR_INTERACTIVE_COMMAND_RE = re.compile(
+    r"(?:^|[;&|]\s*)(?:cd|export|unset|source|read|select|\.)(?:\s|$)"
+    r"|(?:^|\s)(?:sudo|ssh|scp|sftp|telnet|ftp)(?:\s|$)"
+    r"|&\s*$",
+    re.IGNORECASE,
+)
+
+
+def _foreground_handoff_eligible(
+    *,
+    command: str,
+    env_type: str,
+    pty: bool,
+    approved_run: bool,
+    timeout: float,
+    async_delivery: bool,
+    budget: float,
+) -> bool:
+    """Return whether a foreground command can safely become tracked work."""
+    if (
+        env_type != "local"
+        or pty
+        or approved_run
+        or not async_delivery
+        or budget <= 0
+        or timeout <= budget
+    ):
+        return False
+    return _STATEFUL_OR_INTERACTIVE_COMMAND_RE.search(command or "") is None
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
     "TERMINAL_DISK_WARNING_GB",
@@ -1031,7 +1073,7 @@ Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 Because exported environment state persists, activate a virtualenv or export setup variables once per session; do not re-source the same environment before every command unless a command proves the shell state was reset.
 
-Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
+Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands. In a gateway session, eligible non-interactive local commands with an explicit timeout above the 120s foreground budget are tracked from launch; if still running at the budget they return a session_id/PID and continue with completion notification instead of blocking or being killed.
 Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:
   (1) Long-lived processes that never exit (servers, watchers, daemons) — silent is correct, there's no exit to notify on.
   (2) Long-running bounded tasks (tests, builds, deploys, CI pollers, batch jobs) — MUST set notify_on_complete=true. Without it you'll either forget to poll or sit blocked waiting for the user to surface the result.
@@ -2161,6 +2203,94 @@ def _resolve_notification_flag_conflict(
     return watch_patterns, ""
 
 
+def _configure_auto_handoff_delivery(proc_session, session_key: str) -> None:
+    """Attach durable gateway completion routing to an auto-handoff process."""
+    from gateway.session_context import get_session_env
+    from tools.process_registry import process_registry
+
+    proc_session.watcher_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    proc_session.watcher_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    proc_session.watcher_user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+    proc_session.watcher_user_name = get_session_env("HERMES_SESSION_USER_NAME", "")
+    proc_session.watcher_thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "")
+    proc_session.watcher_message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "")
+    proc_session.notify_on_complete = True
+    proc_session.watcher_interval = 5
+    process_registry.pending_watchers.append({
+        "session_id": proc_session.id,
+        "check_interval": 5,
+        "session_key": session_key,
+        "platform": proc_session.watcher_platform,
+        "chat_id": proc_session.watcher_chat_id,
+        "user_id": proc_session.watcher_user_id,
+        "user_name": proc_session.watcher_user_name,
+        "thread_id": proc_session.watcher_thread_id,
+        "message_id": proc_session.watcher_message_id,
+        "notify_on_complete": True,
+    })
+    process_registry._write_checkpoint()
+
+
+def _format_auto_handoff_completion(
+    *,
+    command: str,
+    command_cwd: str,
+    proc_session,
+    session_id: Optional[str],
+    task_id: Optional[str],
+    effective_task_id: str,
+    env_type: str,
+) -> str:
+    """Return a normal foreground result for tracked work that finished in-budget."""
+    from tools.ansi_strip import strip_ansi
+    from agent.redact import redact_terminal_output
+
+    output = strip_ansi(proc_session.output_buffer or "")
+    output = redact_terminal_output(output.strip(), command) if output else ""
+    returncode = int(proc_session.exit_code or 0)
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        for hook_result in invoke_hook(
+            "transform_terminal_output",
+            command=command,
+            output=output,
+            returncode=returncode,
+            task_id=effective_task_id or "",
+            env_type=env_type,
+        ):
+            if isinstance(hook_result, str):
+                output = hook_result
+                break
+    except Exception:
+        pass
+
+    result = {"output": output, "exit_code": returncode, "error": None}
+    exit_note = _interpret_exit_code(command, returncode)
+    if exit_note:
+        result["exit_code_meaning"] = exit_note
+    try:
+        from agent.verification_evidence import record_terminal_result
+
+        evidence = record_terminal_result(
+            command=command,
+            cwd=command_cwd,
+            session_id=session_id or task_id or effective_task_id or "default",
+            exit_code=returncode,
+            output=output,
+        )
+        if evidence:
+            result["verification_evidence"] = {
+                "status": evidence.get("status"),
+                "kind": evidence.get("kind"),
+                "scope": evidence.get("scope"),
+                "canonical_command": evidence.get("canonical_command"),
+            }
+    except Exception:
+        logger.debug("verification evidence recording failed", exc_info=True)
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _resolve_command_cwd(
     *,
     workdir: Optional[str],
@@ -2535,6 +2665,102 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+
+        _auto_handoff = False
+        if not background and timeout is not None and (task_id or session_id):
+            try:
+                from gateway.session_context import async_delivery_supported
+
+                _async_delivery = bool(async_delivery_supported())
+            except Exception:
+                _async_delivery = False
+            _auto_handoff = _foreground_handoff_eligible(
+                command=command,
+                env_type=env_type,
+                pty=effective_pty,
+                approved_run=bool(_approved_run or approval_note),
+                timeout=float(effective_timeout),
+                async_delivery=_async_delivery,
+                budget=float(FOREGROUND_HANDOFF_BUDGET),
+            )
+
+        if _auto_handoff:
+            from tools.process_registry import process_registry
+
+            command_cwd = _resolve_command_cwd(
+                workdir=workdir,
+                default_cwd=cwd,
+                session_key=session_key,
+            )
+            proc_session = None
+            try:
+                proc_session = process_registry.spawn_local(
+                    command=command,
+                    cwd=command_cwd,
+                    task_id=effective_task_id,
+                    session_key=session_key,
+                    env_vars=env.env if hasattr(env, "env") else None,
+                    use_pty=False,
+                )
+                _configure_auto_handoff_delivery(proc_session, session_key)
+                wait_result = process_registry.wait(
+                    proc_session.id,
+                    timeout=max(0.01, float(FOREGROUND_HANDOFF_BUDGET)),
+                )
+                if wait_result.get("status") == "exited":
+                    record_session_cwd(session_key, command_cwd)
+                    return _format_auto_handoff_completion(
+                        command=command,
+                        command_cwd=command_cwd,
+                        proc_session=proc_session,
+                        session_id=session_id,
+                        task_id=task_id,
+                        effective_task_id=effective_task_id,
+                        env_type=env_type,
+                    )
+                if wait_result.get("status") == "interrupted":
+                    killed = process_registry.kill_process(
+                        proc_session.id,
+                        source="terminal.auto_handoff.interrupt",
+                    )
+                    return json.dumps({
+                        "output": killed.get("output", ""),
+                        "exit_code": 130,
+                        "error": "Command interrupted before background handoff",
+                        "status": "interrupted",
+                    }, ensure_ascii=False)
+                return json.dumps({
+                    "output": wait_result.get("output", ""),
+                    "session_id": proc_session.id,
+                    "pid": proc_session.pid,
+                    "cwd": command_cwd,
+                    "phase": "running",
+                    "status": "running",
+                    "handoff": True,
+                    "notify_on_complete": True,
+                    "foreground_budget_seconds": FOREGROUND_HANDOFF_BUDGET,
+                    "exit_code": 0,
+                    "error": None,
+                }, ensure_ascii=False)
+            except Exception as e:
+                if proc_session is not None and not proc_session.exited:
+                    try:
+                        process_registry.kill_process(
+                            proc_session.id,
+                            source="terminal.auto_handoff.fallback",
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to stop tracked process before foreground fallback"
+                        )
+                        return tool_error(
+                            "Tracked handoff setup failed and the started process could not "
+                            "be stopped safely; refusing to launch a duplicate foreground command."
+                        )
+                logger.warning(
+                    "Tracked foreground handoff unavailable; falling back to explicit foreground: %s",
+                    e,
+                )
 
         if background:
             # Spawn a tracked background process via the process registry.
