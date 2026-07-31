@@ -76,6 +76,43 @@ async def test_start_ack_sends_configured_text_for_fresh_turn(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_start_ack_can_include_bounded_message_scope(monkeypatch):
+    adapter = StartAckAdapter()
+    done = asyncio.Event()
+
+    async def handler(_event):
+        done.set()
+        return "final"
+
+    adapter.set_message_handler(handler)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "start_ack": True,
+                        "start_ack_text": (
+                            "⚙️ Opgepakt: {scope}\n"
+                            "Eerste inhoudelijke status: binnen ±1 min."
+                        ),
+                    }
+                }
+            }
+        },
+    )
+
+    await adapter.handle_message(_event("Controleer   alle crons\nen herstel de rode jobs."))
+    await asyncio.wait_for(done.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert adapter.sent[0][1] == (
+        "⚙️ Opgepakt: Controleer alle crons en herstel de rode jobs.\n"
+        "Eerste inhoudelijke status: binnen ±1 min."
+    )
+
+
+@pytest.mark.asyncio
 async def test_start_ack_skips_slash_commands(monkeypatch):
     adapter = StartAckAdapter()
     adapter.set_message_handler(AsyncMock(return_value="status ok"))
