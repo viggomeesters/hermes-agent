@@ -2171,6 +2171,10 @@ if _config_path.exists():
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
             if "gateway_notify_interval" in _agent_cfg:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
+            if "gateway_first_notify_delay" in _agent_cfg:
+                os.environ["HERMES_AGENT_FIRST_NOTIFY_DELAY"] = str(
+                    _agent_cfg["gateway_first_notify_delay"]
+                )
             if "restart_drain_timeout" in _agent_cfg:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
             if "gateway_auto_continue_freshness" in _agent_cfg:
@@ -2366,6 +2370,8 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.turn_context import TurnContext
+from gateway.notification_timing import FirstProgressDeadline, notification_delays
+from gateway.turn_latency import mark_turn_phase
 from gateway.platforms.base import (
     BasePlatformAdapter,
     EphemeralReply,
@@ -3503,6 +3509,11 @@ def _reconnect_backoff(attempt: int) -> int:
     return min(30 * (2 ** (attempt - 1)), _RECONNECT_BACKOFF_CAP)
 
 
+def _mark_visible_turn_progress(ctx: TurnContext) -> None:
+    ctx.first_progress_deadline.mark_visible()
+    mark_turn_phase(ctx.source, ctx.event_message_id, "first_progress")
+
+
 class TurnRunner:
     """Per-turn collaborator carrying the tool-progress callbacks that used to
     be nested closures inside ``GatewayRunner._run_agent_inner``.
@@ -3700,6 +3711,7 @@ class TurnRunner:
         if ctx.progress_mode == "verbose":
             if _code_block_full is not None:
                 ctx.last_was_terminal_block[0] = True
+                _mark_visible_turn_progress(ctx)
                 ctx.progress_queue.put(_code_block_full)
                 return
             ctx.last_was_terminal_block[0] = False
@@ -3717,6 +3729,7 @@ class TurnRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
+            _mark_visible_turn_progress(ctx)
             ctx.progress_queue.put(msg)
             return
 
@@ -3769,6 +3782,7 @@ class TurnRunner:
         ctx.last_progress_msg[0] = msg
         ctx.repeat_count[0] = 0
 
+        _mark_visible_turn_progress(ctx)
         ctx.progress_queue.put(msg)
 
     async def send_progress_messages(self):
@@ -4393,6 +4407,7 @@ class TurnRunner:
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            _mark_visible_turn_progress(ctx)
             display_text = text
             if _stream_consumer is not None:
                 if already_streamed:
@@ -23580,6 +23595,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             log_mode_enabled=log_mode_enabled,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             needs_progress_queue=needs_progress_queue,
+            first_progress_deadline=FirstProgressDeadline(),
             _voice_ack_fired=_voice_ack_fired,
             _voice_ack_guild=_voice_ack_guild,
             _voice_ack_loop=_voice_ack_loop,
@@ -23966,6 +23982,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        _FIRST_NOTIFY_DELAY_RAW = _float_env(
+            "HERMES_AGENT_FIRST_NOTIFY_DELAY",
+            _NOTIFY_INTERVAL_RAW,
+        )
+        _FIRST_NOTIFY_DELAY = (
+            _FIRST_NOTIFY_DELAY_RAW
+            if _FIRST_NOTIFY_DELAY_RAW > 0
+            else _NOTIFY_INTERVAL_RAW
+        )
         _long_running_mode = _display_surface_mode(
             "long_running_notifications",
             default=True,
@@ -23982,8 +24007,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not _notify_adapter:
                 return
             _heartbeat_msg_id: Optional[str] = None
+            _has_early_deadline = (
+                0 < _FIRST_NOTIFY_DELAY < _NOTIFY_INTERVAL
+            )
+            _is_first_deadline = _has_early_deadline
+            _notification_delays = notification_delays(
+                first_delay=_FIRST_NOTIFY_DELAY,
+                interval=_NOTIFY_INTERVAL,
+            )
             while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
+                await asyncio.sleep(next(_notification_delays))
                 # Stop heartbeating once this run no longer owns the session
                 # slot or the executor has finished — otherwise a stale
                 # "running: delegate_task" bubble can outlive the run that
@@ -24012,15 +24045,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         True,
                     )
                 )
-                _heartbeat_text = (
-                    _generic_status_phrase("status")
-                    if _long_running_mode == "generic"
-                    else _build_long_running_heartbeat(
-                        _agent_ref,
-                        elapsed_mins=_elapsed_mins,
-                        want_iteration_detail=_want_iteration_detail,
+                if _is_first_deadline:
+                    _is_first_deadline = False
+                    if not turn_ctx.first_progress_deadline.should_notify():
+                        continue
+                    _heartbeat_text = (
+                        "⏳ 1 min — run is actief; nog geen tool of inhoudelijke tussenstatus"
                     )
-                )
+                else:
+                    _heartbeat_text = (
+                        _generic_status_phrase("status")
+                        if _long_running_mode == "generic"
+                        else _build_long_running_heartbeat(
+                            _agent_ref,
+                            elapsed_mins=_elapsed_mins,
+                            want_iteration_detail=_want_iteration_detail,
+                        )
+                    )
                 try:
                     _append_only_heartbeat = source.platform == Platform.TELEGRAM
                     _notify_res, _next_heartbeat_msg_id = (
