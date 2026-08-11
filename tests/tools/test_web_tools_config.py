@@ -444,6 +444,18 @@ class TestCheckWebApiKey:
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
+    def test_search_available_via_codex_oauth_without_vendor_backend(self):
+        """Codex first-party search does not require vendor credentials."""
+        from tools.web_tools import check_web_search_available
+
+        with patch("tools.web_tools.check_web_api_key", return_value=False), \
+             patch("hermes_cli.config.load_config", return_value={
+                 "model": {"provider": "openai-codex"}
+             }), \
+             patch("agent.auxiliary_client._read_codex_access_token",
+                   return_value="oauth-token"):
+            assert check_web_search_available() is True
+
 
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env

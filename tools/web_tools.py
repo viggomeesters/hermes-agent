@@ -1084,6 +1084,28 @@ def check_web_api_key() -> bool:
         return False
 
 
+def check_web_search_available() -> bool:
+    """Return whether ``web_search`` can be exposed to the active model.
+
+    ChatGPT/Codex Responses has a provider-hosted ``web_search`` built-in.
+    The transport swaps Hermes's client function declaration for that
+    built-in, so authenticated Codex sessions need no vendor search key.
+    """
+    if check_web_api_key():
+        return True
+    try:
+        from hermes_cli.config import load_config
+        from agent.auxiliary_client import _read_codex_access_token
+
+        provider = str(
+            load_config().get("model", {}).get("provider") or ""
+        ).strip().lower()
+        return provider == "openai-codex" and bool(_read_codex_access_token())
+    except Exception as exc:  # noqa: BLE001 — availability probes fail closed
+        logger.debug("Codex native web-search availability check failed: %s", exc)
+        return False
+
+
 if __name__ == "__main__":
     """
     Simple test/demo when run directly
@@ -1215,7 +1237,7 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
-    check_fn=check_web_api_key,
+    check_fn=check_web_search_available,
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
