@@ -459,7 +459,10 @@ class TestConnectDisconnect(unittest.TestCase):
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
             from plugins.platforms.email.adapter import EmailAdapter
-            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            adapter = EmailAdapter(PlatformConfig(
+                enabled=True,
+                extra={"inbound_enabled": True},
+            ))
         return adapter
 
     def test_connect_success(self):
@@ -485,6 +488,59 @@ class TestConnectDisconnect(unittest.TestCase):
             adapter._running = False
             if adapter._poll_task:
                 adapter._poll_task.cancel()
+
+    def test_connect_outbound_only_skips_imap_and_polling(self):
+        """Outbound-only email must not log into IMAP or consume inbound mail."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            adapter = EmailAdapter(PlatformConfig(
+                enabled=True,
+                extra={"inbound_enabled": False},
+            ))
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap, \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+        self.assertTrue(result)
+        mock_imap.assert_not_called()
+        self.assertFalse(adapter._running)
+        self.assertIsNone(adapter._poll_task)
+
+    def test_connect_outbound_only_does_not_require_imap_host(self):
+        """SMTP-only operation remains valid when no IMAP host is configured."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            adapter = EmailAdapter(PlatformConfig(
+                enabled=True,
+                extra={"inbound_enabled": False},
+            ))
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap, \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            result = asyncio.run(adapter.connect())
+
+        self.assertTrue(result)
+        mock_imap.assert_not_called()
 
 
 class TestFetchNewMessages(unittest.TestCase):
@@ -1033,7 +1089,10 @@ class TestConnectionConfigResolution(unittest.TestCase):
             "EMAIL_IMAP_HOST": "",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }, clear=False):
-            adapter = EmailAdapter(PlatformConfig(enabled=True))
+            adapter = EmailAdapter(PlatformConfig(
+                enabled=True,
+                extra={"inbound_enabled": True},
+            ))
 
         with patch("imaplib.IMAP4_SSL") as mock_imap:
             result = asyncio.run(adapter.connect())

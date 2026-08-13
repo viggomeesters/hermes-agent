@@ -674,14 +674,16 @@ class EmailAdapter(BasePlatformAdapter):
         # Validate up front so a missing host surfaces as an actionable config
         # error instead of IMAP4_SSL("") raising the cryptic
         # ``[Errno 8] nodename nor servname provided, or not known``.
+        required = [
+            ("EMAIL_ADDRESS", self._address),
+            ("EMAIL_PASSWORD", self._password),
+            ("EMAIL_SMTP_HOST", self._smtp_host),
+        ]
+        if self._inbound_enabled:
+            required.append(("EMAIL_IMAP_HOST", self._imap_host))
         missing = [
             name
-            for name, value in (
-                ("EMAIL_ADDRESS", self._address),
-                ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
-                ("EMAIL_SMTP_HOST", self._smtp_host),
-            )
+            for name, value in required
             if not value
         ]
         if missing:
@@ -793,8 +795,9 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        if self._inbound_enabled:
+            self._running = True
+            self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
         # Plugin-registered native handlers (ctx.register_platform_handler).
         self._wire_plugin_handlers(None)

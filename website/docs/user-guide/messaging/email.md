@@ -81,6 +81,23 @@ EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
 
+### Outbound-only mode
+
+To keep explicit SMTP sending available while preventing email from ever
+starting an agent run, disable inbound handling in `config.yaml`:
+
+```yaml
+gateway:
+  platforms:
+    email:
+      extra:
+        inbound_enabled: false
+```
+
+In this mode Hermes does not log into IMAP, scan or mark inbox messages, or
+start an email polling task. SMTP remains available for explicit outbound
+messages.
+
 ---
 
 ## Step 2: Start the Gateway
