@@ -441,6 +441,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
+        # Outbound-only mode keeps SMTP available while making inbound email
+        # structurally incapable of reaching the agent: no IMAP login, no inbox
+        # scan, and no polling task. This is behavioral configuration and
+        # therefore belongs in config.yaml rather than the secrets-only .env.
+        self._inbound_enabled = bool(extra.get("inbound_enabled", True))
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -553,14 +558,16 @@ class EmailAdapter(BasePlatformAdapter):
         # Validate up front so a missing host surfaces as an actionable config
         # error instead of IMAP4_SSL("") raising the cryptic
         # ``[Errno 8] nodename nor servname provided, or not known``.
+        required = [
+            ("EMAIL_ADDRESS", self._address),
+            ("EMAIL_PASSWORD", self._password),
+            ("EMAIL_SMTP_HOST", self._smtp_host),
+        ]
+        if self._inbound_enabled:
+            required.append(("EMAIL_IMAP_HOST", self._imap_host))
         missing = [
             name
-            for name, value in (
-                ("EMAIL_ADDRESS", self._address),
-                ("EMAIL_PASSWORD", self._password),
-                ("EMAIL_IMAP_HOST", self._imap_host),
-                ("EMAIL_SMTP_HOST", self._smtp_host),
-            )
+            for name, value in required
             if not value
         ]
         if missing:
@@ -580,24 +587,27 @@ class EmailAdapter(BasePlatformAdapter):
             )
             return False
 
-        try:
-            # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
-            _send_imap_id(imap)
-            # Mark all existing messages as seen so we only process new ones
-            imap.select("INBOX")
-            status, data = imap.uid("search", None, "ALL")
-            if status == "OK" and data and data[0]:
-                for uid in data[0].split():
-                    self._seen_uids.add(uid)
-            # Keep only the most recent UIDs to prevent unbounded growth
-            self._trim_seen_uids()
-            imap.logout()
-            logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
-        except Exception as e:
-            logger.error("[Email] IMAP connection failed: %s", e)
-            return False
+        if self._inbound_enabled:
+            try:
+                # Test IMAP connection
+                imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+                imap.login(self._address, self._password)
+                _send_imap_id(imap)
+                # Mark all existing messages as seen so we only process new ones
+                imap.select("INBOX")
+                status, data = imap.uid("search", None, "ALL")
+                if status == "OK" and data and data[0]:
+                    for uid in data[0].split():
+                        self._seen_uids.add(uid)
+                # Keep only the most recent UIDs to prevent unbounded growth
+                self._trim_seen_uids()
+                imap.logout()
+                logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
+            except Exception as e:
+                logger.error("[Email] IMAP connection failed: %s", e)
+                return False
+        else:
+            logger.info("[Email] Inbound disabled; IMAP connection and polling skipped.")
 
         try:
             # Test SMTP connection
@@ -611,8 +621,9 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] SMTP connection failed: %s", e)
             return False
 
-        self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        if self._inbound_enabled:
+            self._running = True
+            self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
         return True
 
