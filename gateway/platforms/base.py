@@ -5532,6 +5532,7 @@ class BasePlatformAdapter(ABC):
         self._release_session_guard(session_key, guard=command_guard)
         if pending_event is None:
             return
+        await self._send_queued_start_ack_if_configured(pending_event)
         self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(
@@ -5665,6 +5666,54 @@ class BasePlatformAdapter(ABC):
             logger.info("[%s] Sent start ack for %s", self.name, event.source.chat_id)
         except Exception as exc:
             logger.debug("[%s] Failed to send start ack: %s", self.name, exc)
+
+    def _resolve_queued_start_ack(self, event: MessageEvent) -> str | None:
+        """Return a receipt when a previously queued turn actually starts.
+
+        This is deliberately separate from ``start_ack``: quiet chat profiles
+        can keep fresh turns bubble-free while still making the queued→active
+        transition legible.
+        """
+        if event.get_command():
+            return None
+        try:
+            from hermes_cli.config import load_config
+            from gateway.display_config import resolve_display_setting
+            user_config = load_config() or {}
+            platform_key = _platform_name(getattr(event.source, "platform", None))
+            enabled = resolve_display_setting(
+                user_config, platform_key, "queued_start_ack", False
+            )
+            if isinstance(enabled, str):
+                enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+            if not enabled:
+                return None
+            text = resolve_display_setting(
+                user_config,
+                platform_key,
+                "queued_start_ack_text",
+                "⚙️ Bezig.",
+            )
+            return str(text or "").strip() or None
+        except Exception as exc:
+            logger.debug("[%s] Failed to resolve queued start ack: %s", self.name, exc)
+            return None
+
+    async def _send_queued_start_ack_if_configured(self, event: MessageEvent) -> None:
+        text = self._resolve_queued_start_ack(event)
+        if not text:
+            return
+        reply_anchor = _reply_anchor_for_event(event)
+        metadata = _mark_notify_metadata(_thread_metadata_for_source(event.source, reply_anchor))
+        try:
+            await self._send_with_retry(
+                chat_id=event.source.chat_id,
+                content=text,
+                reply_to=reply_anchor,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.debug("[%s] Failed to send queued start ack: %s", self.name, exc)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """
@@ -6442,6 +6491,7 @@ class BasePlatformAdapter(ABC):
                 if _active is not None:
                     _active.clear()
                 await _stop_typing_task()
+                await self._send_queued_start_ack_if_configured(pending_event)
                 # Spawn a fresh task for the pending message instead of
                 # recursing.  Issue #17758: `await
                 # self._process_message_background(...)` here grew the
@@ -6577,6 +6627,7 @@ class BasePlatformAdapter(ABC):
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
                         _active.clear()
+                    await self._send_queued_start_ack_if_configured(late_pending)
                     drain_task = asyncio.create_task(
                         self._process_message_background(late_pending, session_key)
                     )
