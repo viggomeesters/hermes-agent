@@ -30,7 +30,7 @@ class StartAckAdapter(BasePlatformAdapter):
         return {}
 
 
-def _event(text="do work"):
+def _event(text="do work", message_id="msg-1"):
     return MessageEvent(
         text=text,
         message_type=MessageType.TEXT,
@@ -40,7 +40,7 @@ def _event(text="do work"):
             chat_type="dm",
             user_id="user-1",
         ),
-        message_id="msg-1",
+        message_id=message_id,
     )
 
 
@@ -154,3 +154,51 @@ async def test_start_ack_send_failure_does_not_block_real_turn(monkeypatch):
     await asyncio.sleep(0)
 
     assert send.await_args_list[0].kwargs["content"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_queued_turn_gets_ack_only_when_it_actually_starts(monkeypatch):
+    adapter = StartAckAdapter()
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def handler(event):
+        if event.text == "first":
+            first_started.set()
+            await release_first.wait()
+        else:
+            second_started.set()
+        return f"final:{event.text}"
+
+    adapter.set_message_handler(handler)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "display": {
+                "busy_input_mode": "queue",
+                "platforms": {
+                    "telegram": {
+                        "start_ack": False,
+                        "queued_start_ack": True,
+                        "queued_start_ack_text": "⚙️ Bezig.",
+                    }
+                },
+            }
+        },
+    )
+
+    await adapter.handle_message(_event("first", "msg-1"))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    assert all(content != "⚙️ Bezig." for _chat, content, _kwargs in adapter.sent)
+
+    await adapter.handle_message(_event("second", "msg-2"))
+    assert all(content != "⚙️ Bezig." for _chat, content, _kwargs in adapter.sent)
+
+    release_first.set()
+    await asyncio.wait_for(second_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    visible = [content for _chat, content, _kwargs in adapter.sent]
+    assert visible.count("⚙️ Bezig.") == 1
+    assert visible.index("⚙️ Bezig.") < visible.index("final:second")
