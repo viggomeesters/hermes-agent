@@ -143,6 +143,36 @@ class FailingAgent:
         }
 
 
+class SlowOperationCardAgent:
+    """Stays alive long enough for a card and emits real phase changes."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+        self.current_tool = None
+        self.api_call_count = 0
+
+    def get_activity_summary(self):
+        return {
+            "current_tool": self.current_tool,
+            "api_call_count": self.api_call_count,
+            "seconds_since_activity": 0.0,
+        }
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.15)
+        self.current_tool = "read_file"
+        if self.tool_progress_callback is not None:
+            self.tool_progress_callback("tool.started", "read_file", "config.yaml", {})
+        time.sleep(0.10)
+        self.current_tool = "patch"
+        if self.tool_progress_callback is not None:
+            self.tool_progress_callback("tool.started", "patch", "gateway/run.py", {})
+        time.sleep(0.10)
+        self.api_call_count = 1
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -172,6 +202,7 @@ def _install_fakes(
     *,
     cleanup_on: bool,
     cleanup_platform: Platform = Platform.TELEGRAM,
+    platform_display: dict | None = None,
 ):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
@@ -190,13 +221,16 @@ def _install_fakes(
 
     # Wire the per-platform cleanup_progress flag via the config loader the
     # gateway actually reads (``_load_gateway_config`` returns user config).
+    display_cfg = dict(platform_display or {})
+    if cleanup_on:
+        display_cfg["cleanup_progress"] = True
     cfg = {
         "display": {
             "platforms": {
-                cleanup_platform.value: {"cleanup_progress": True},
+                cleanup_platform.value: display_cfg,
             }
         }
-    } if cleanup_on else {}
+    } if display_cfg else {}
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
     return gateway_run
 
@@ -295,3 +329,55 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_operation_card_tracks_phase_changes_and_is_removed_after_final_delivery(
+    monkeypatch, tmp_path
+):
+    """The single long-run card is live during work and disappears after success."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        SlowOperationCardAgent,
+        cleanup_on=True,
+        platform_display={
+            "operation_cards": True,
+            "long_running_notifications": True,
+            "operation_card_phase_update_interval": 0.01,
+            "tool_progress": False,
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_FIRST_NOTIFY_DELAY", "0.06")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "1")
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-operation-card",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) == 1
+    card_id = adapter.sent[0]["message_id"]
+    edit_texts = [edit["content"] for edit in adapter.edits]
+    assert any("Fase: read file" in text for text in edit_texts), adapter.edits
+    assert any("Fase: patch" in text for text in edit_texts), adapter.edits
+
+    cb = adapter.pop_post_delivery_callback(session_key)
+    assert callable(cb)
+    await _fire_post_delivery_cb(cb)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if adapter.deleted:
+            break
+
+    assert {item["message_id"] for item in adapter.deleted} == {card_id}

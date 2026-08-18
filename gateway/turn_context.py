@@ -128,3 +128,4 @@ class TurnContext:
     _step_callback_sync: Optional[Callable] = None
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
+    _operation_card_phase_callback: Optional[Callable[[str, str], None]] = None
