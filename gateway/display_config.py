@@ -21,6 +21,7 @@ config migration (version bump) automatically moves the old format into the new
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # Minimum seconds between operation-card edits caused by tool/phase
+    # changes. Heartbeats retain their separate agent-level cadence.
+    "operation_card_phase_update_interval": 15.0,
     # Live working-state status on platforms whose typing indicator renders
     # text (Slack's assistant status line). Values:
     #   "full" / true  -> verb + argument preview ("is running pytest…")
@@ -320,4 +324,10 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "operation_card_phase_update_interval":
+        try:
+            parsed = float(value)
+            return max(0.0, parsed) if math.isfinite(parsed) else 15.0
+        except (TypeError, ValueError):
+            return 15.0
     return value

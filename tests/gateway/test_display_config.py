@@ -279,6 +279,53 @@ class TestCleanupProgress:
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
 
 
+class TestOperationCardPhaseUpdateInterval:
+    def test_default_is_fifteen_seconds(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting(
+            {}, "telegram", "operation_card_phase_update_interval"
+        ) == 15.0
+
+    def test_platform_override_is_numeric_and_non_negative(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {"operation_card_phase_update_interval": "12.5"}
+                }
+            }
+        }
+        assert resolve_display_setting(
+            config, "telegram", "operation_card_phase_update_interval"
+        ) == 12.5
+
+        config["display"]["platforms"]["telegram"][
+            "operation_card_phase_update_interval"
+        ] = -1
+        assert resolve_display_setting(
+            config, "telegram", "operation_card_phase_update_interval"
+        ) == 0.0
+
+    def test_non_finite_values_fall_back_to_default(self):
+        from gateway.display_config import resolve_display_setting
+
+        for value in ("nan", "inf", "-inf"):
+            config = {
+                "display": {
+                    "platforms": {
+                        "telegram": {
+                            "operation_card_phase_update_interval": value
+                        }
+                    }
+                }
+            }
+            assert resolve_display_setting(
+                config, "telegram", "operation_card_phase_update_interval"
+            ) == 15.0
+
+
 class TestToolProgressGrouping:
     """resolve_display_setting() for the tool_progress_grouping knob."""
 
