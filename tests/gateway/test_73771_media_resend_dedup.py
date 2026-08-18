@@ -486,16 +486,61 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
         _reply_anchor_for_event=lambda event: None,
     )
 
-    await GatewayRunner._deliver_media_from_response(
+    delivery = await GatewayRunner._deliver_media_from_response(
         runner,
         f"Here's the flyer again.\nMEDIA:{img}",
         _stream_event(),
         adapter,
     )
 
+    assert delivery == (True, True)
     adapter.send_multiple_images.assert_awaited_once()
     sent_paths = [p for p, _cap in adapter.send_multiple_images.await_args.kwargs["images"]]
     assert str(img) in sent_paths[0]
+
+
+@pytest.mark.asyncio
+async def test_streamed_explicit_media_failure_is_reported(tmp_path, monkeypatch):
+    doc = _allowed_file(tmp_path, monkeypatch, "proof.pdf")
+    adapter = _stream_adapter()
+    adapter.send_document.return_value = SendResult(
+        success=False,
+        error="delivery rejected",
+    )
+    runner = SimpleNamespace(
+        _thread_metadata_for_source=lambda source, anchor=None: {},
+        _reply_anchor_for_event=lambda event: None,
+    )
+
+    delivery = await GatewayRunner._deliver_media_from_response(
+        runner,
+        f"MEDIA:{doc}",
+        _stream_event(),
+        adapter,
+    )
+
+    assert delivery == (True, False)
+    adapter.send_document.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_streamed_media_syntax_prose_is_not_a_delivery_attempt():
+    adapter = _stream_adapter()
+    runner = SimpleNamespace(
+        _thread_metadata_for_source=lambda source, anchor=None: {},
+        _reply_anchor_for_event=lambda event: None,
+    )
+
+    delivery = await GatewayRunner._deliver_media_from_response(
+        runner,
+        "Use the MEDIA: directive followed by an absolute path.",
+        _stream_event(),
+        adapter,
+    )
+
+    assert delivery == (False, False)
+    adapter.send_multiple_images.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()
 
 
 def test_stream_rescan_accepts_no_history_dedup_input():

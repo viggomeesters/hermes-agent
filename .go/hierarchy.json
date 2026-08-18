@@ -1,0 +1,21 @@
+{
+  "schema": "go-workflow.repo-local.hierarchy.v1",
+  "kind": "hierarchy",
+  "project": "hermes-agent",
+  "epics": [
+    {
+      "id": "workflow",
+      "title": "Workflow",
+      "features": [
+        {
+          "id": "repo-local-workflow",
+          "title": "Repo-local workflow",
+          "tasks": [
+            "TG-9000X-CLEANUP"
+          ]
+        }
+      ],
+      "tasks": []
+    }
+  ]
+}

@@ -66,12 +66,25 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
         mid = self._mint_id()
         self.sent.append(
-            {"chat_id": chat_id, "content": content, "message_id": mid, "metadata": metadata}
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "message_id": mid,
+                "metadata": metadata,
+                "at": time.monotonic(),
+            }
         )
         return SendResult(success=True, message_id=mid)
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
-        self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content})
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "at": time.monotonic(),
+            }
+        )
         return SendResult(success=True, message_id=message_id)
 
     async def delete_message(self, chat_id, message_id) -> bool:
@@ -170,6 +183,33 @@ class SlowOperationCardAgent:
             self.tool_progress_callback("tool.started", "patch", "gateway/run.py", {})
         time.sleep(0.10)
         self.api_call_count = 1
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class SlowNoPhaseAgent:
+    """Long enough for one card, without tool callbacks."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+        self.task_id = "task-no-phase"
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.14)
+        return {"final_response": "done", "messages": [], "api_calls": 0}
+
+    def get_activity_summary(self):
+        return {"description": "working", "api_call_count": 0}
+
+
+class RacingOperationCardAgent(SlowOperationCardAgent):
+    """Emit a phase change immediately before the periodic heartbeat."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.11)
+        self.current_tool = "read_file"
+        if self.tool_progress_callback is not None:
+            self.tool_progress_callback("tool.started", "read_file", "config.yaml", {})
+        time.sleep(0.20)
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
@@ -287,9 +327,8 @@ async def test_messaging_agent_forwards_checkpoint_config(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
-    """When a bg-review-style callback is already registered, the cleanup
-    callback chains with it — both fire, neither clobbers the other."""
+async def test_cleanup_coexists_with_existing_callback(monkeypatch, tmp_path):
+    """General and success-only callbacks coexist without clobbering."""
     adapter = CleanupCaptureAdapter()
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(monkeypatch, ProgressAgent, cleanup_on=True)
@@ -317,9 +356,12 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     )
 
     assert result["final_response"] == "done"
-    cb = adapter.pop_post_delivery_callback(session_key)
-    assert callable(cb)
-    await _fire_post_delivery_cb(cb)
+    general_cb = adapter.pop_post_delivery_callback(session_key)
+    cleanup_cb = adapter.pop_post_delivery_callback(session_key, success_only=True)
+    assert callable(general_cb)
+    assert callable(cleanup_cb)
+    await _fire_post_delivery_cb(general_cb)
+    await _fire_post_delivery_cb(cleanup_cb)
     for _ in range(20):
         await asyncio.sleep(0.01)
         if adapter.deleted:
@@ -372,7 +414,7 @@ async def test_operation_card_tracks_phase_changes_and_is_removed_after_final_de
     assert any("Fase: read file" in text for text in edit_texts), adapter.edits
     assert any("Fase: patch" in text for text in edit_texts), adapter.edits
 
-    cb = adapter.pop_post_delivery_callback(session_key)
+    cb = adapter.pop_post_delivery_callback(session_key, success_only=True)
     assert callable(cb)
     await _fire_post_delivery_cb(cb)
     for _ in range(20):
@@ -381,3 +423,89 @@ async def test_operation_card_tracks_phase_changes_and_is_removed_after_final_de
             break
 
     assert {item["message_id"] for item in adapter.deleted} == {card_id}
+
+
+@pytest.mark.asyncio
+async def test_operation_card_heartbeat_observes_progress_once(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        SlowNoPhaseAgent,
+        cleanup_on=True,
+        platform_display={
+            "operation_cards": True,
+            "long_running_notifications": True,
+            "operation_card_phase_update_interval": 0.01,
+            "tool_progress": False,
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_FIRST_NOTIFY_DELAY", "0.06")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "1")
+
+    operation_card_module = importlib.import_module("gateway.operation_card")
+    real_tracker = operation_card_module.ProgressTracker
+
+    class CountingTracker(real_tracker):
+        observations = 0
+
+        def observe(self, snapshot):
+            type(self).observations += 1
+            return super().observe(snapshot)
+
+    monkeypatch.setattr(operation_card_module, "ProgressTracker", CountingTracker)
+
+    await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1002"),
+        session_id="sess-single-observation",
+        session_key="agent:main:telegram:group:-1002",
+    )
+
+    # Initial running card + terminal completed edit: one observation each.
+    assert CountingTracker.observations == 2
+
+
+@pytest.mark.asyncio
+async def test_phase_and_heartbeat_edits_share_one_rate_limit(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        RacingOperationCardAgent,
+        cleanup_on=True,
+        platform_display={
+            "operation_cards": True,
+            "long_running_notifications": True,
+            "operation_card_phase_update_interval": 0.08,
+            "tool_progress": False,
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_FIRST_NOTIFY_DELAY", "0.06")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.12")
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+
+    await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1003"),
+        session_id="sess-rate-limit",
+        session_key="agent:main:telegram:group:-1003",
+    )
+
+    running_updates = [
+        item
+        for item in [*adapter.sent, *adapter.edits]
+        if "Status: 🟢 actief" in item["content"]
+    ]
+    gaps = [
+        current["at"] - previous["at"]
+        for previous, current in zip(running_updates, running_updates[1:])
+    ]
+    assert len(gaps) >= 2, running_updates
+    assert min(gaps) >= 0.07, gaps

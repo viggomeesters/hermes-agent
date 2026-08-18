@@ -1,0 +1,23 @@
+{
+  "schema": "go-workflow.repo-local.vision.v1",
+  "kind": "vision",
+  "project": "hermes-agent",
+  "status": "active",
+  "north_star": "Reliable multi-platform personal agent runtime with quiet, truthful operational feedback.",
+  "wedge": "Harden Telegram operation-card lifecycle and delivery semantics.",
+  "target_user": "Hermes messaging users",
+  "core_promise": "Long-running work stays visible without tool spam or false completion.",
+  "product_principles": [
+    "repo-local",
+    "json-first",
+    "proof-first"
+  ],
+  "non_goals": [
+    "no central execution database",
+    "no broad migration by default"
+  ],
+  "success_metrics": [
+    "go-workflow-stack validate passes",
+    "go-workflow-stack readback is useful"
+  ]
+}
