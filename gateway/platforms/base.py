@@ -2884,6 +2884,9 @@ class BasePlatformAdapter(ABC):
         # deliveries generation-aware and avoid stale runs clearing callbacks
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
+        # Same chaining/generation semantics, but these callbacks fire only
+        # after the main response was actually accepted by the platform.
+        self._post_successful_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Optional authorization check, registered by GatewayRunner. Used by
@@ -3978,8 +3981,8 @@ class BasePlatformAdapter(ABC):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
-        """Send a batch of images.
+    ) -> SendResult:
+        """Send a batch of images and return aggregate delivery success.
 
         Accepts ``http(s)://``, ``file://`` URIs in the first tuple
         element.
@@ -3989,10 +3992,14 @@ class BasePlatformAdapter(ABC):
         files through ``send_image_file``.
 
         Override in subclasses to bundle into a single native API call
-        (e.g. Signal's multi-attachment RPC)
+        (e.g. Signal's multi-attachment RPC). Legacy overrides returning
+        ``None`` remain fail-closed for success-only cleanup.
         """
         from urllib.parse import unquote as _unquote
 
+        all_succeeded = bool(images)
+        last_message_id = None
+        last_error = None
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -4025,9 +4032,21 @@ class BasePlatformAdapter(ABC):
                         metadata=metadata,
                     )
                 if not img_result.success:
+                    all_succeeded = False
+                    last_error = img_result.error
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                elif img_result.message_id:
+                    last_message_id = img_result.message_id
             except Exception as img_err:
+                all_succeeded = False
+                last_error = str(img_err)
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+
+        return SendResult(
+            success=all_succeeded,
+            message_id=last_message_id,
+            error=last_error,
+        )
 
     async def send_image(
         self,
@@ -4882,23 +4901,23 @@ class BasePlatformAdapter(ABC):
         callback: Callable,
         *,
         generation: int | None = None,
+        success_only: bool = False,
     ) -> None:
-        """Register a deferred callback to fire after the main response.
+        """Register a deferred callback after the main response attempt.
 
-        ``generation`` lets callers tie the callback to a specific gateway run
-        generation so stale runs cannot clear callbacks owned by a fresher run.
-
-        If a callback for the same ``session_key`` (and generation, when set)
-        is already registered, the new callback is chained — both fire, in
-        registration order, with per-callback exception isolation. This lets
-        independent features (background-review release + temporary-bubble
-        cleanup) coexist without clobbering each other. Stale-generation
-        callers never overwrite a fresher generation's slot.
+        ``success_only`` routes the callback to a separate registry that fires
+        only when the platform accepted the final response. Both registries use
+        the same generation ownership and callback-chaining semantics.
         """
         if not session_key or not callable(callback):
             return
 
-        existing = self._post_delivery_callbacks.get(session_key)
+        registry = (
+            self._post_successful_delivery_callbacks
+            if success_only
+            else self._post_delivery_callbacks
+        )
+        existing = registry.get(session_key)
         if existing is not None:
             if isinstance(existing, tuple) and len(existing) == 2:
                 existing_gen, existing_cb = existing
@@ -4924,10 +4943,7 @@ class BasePlatformAdapter(ABC):
                 async def _chained() -> None:
                     # Both _prev and _new may be sync or async. The chained
                     # wrapper itself must be async because the outer invoker
-                    # (``_handle_message`` etc.) awaits awaitable callbacks; a
-                    # sync wrapper here would call ``_prev()`` / ``_new()`` and
-                    # silently drop any returned coroutine, breaking chained
-                    # async post-delivery hooks (e.g. ``/goal`` continuations).
+                    # awaits awaitable callbacks.
                     for _cb in (_prev, _new):
                         try:
                             _result = _cb()
@@ -4941,31 +4957,37 @@ class BasePlatformAdapter(ABC):
                 callback = _chained
 
         if generation is None:
-            self._post_delivery_callbacks[session_key] = callback
+            registry[session_key] = callback
         else:
-            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+            registry[session_key] = (int(generation), callback)
 
     def pop_post_delivery_callback(
         self,
         session_key: str,
         *,
         generation: int | None = None,
+        success_only: bool = False,
     ) -> Callable | None:
         """Pop a deferred callback, optionally requiring generation ownership."""
         if not session_key:
             return None
-        entry = self._post_delivery_callbacks.get(session_key)
+        registry = (
+            self._post_successful_delivery_callbacks
+            if success_only
+            else self._post_delivery_callbacks
+        )
+        entry = registry.get(session_key)
         if entry is None:
             return None
         if isinstance(entry, tuple) and len(entry) == 2:
             entry_generation, callback = entry
             if generation is not None and int(entry_generation) != int(generation):
                 return None
-            self._post_delivery_callbacks.pop(session_key, None)
+            registry.pop(session_key, None)
             return callback if callable(callback) else None
         if generation is not None:
             return None
-        self._post_delivery_callbacks.pop(session_key, None)
+        registry.pop(session_key, None)
         return entry if callable(entry) else None
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
@@ -5955,9 +5977,12 @@ class BasePlatformAdapter(ABC):
             nonlocal delivery_attempted, delivery_succeeded
             if result is None:
                 return
-            delivery_attempted = True
-            if getattr(result, "success", False):
-                delivery_succeeded = True
+            succeeded = bool(getattr(result, "success", False))
+            if delivery_attempted:
+                delivery_succeeded = delivery_succeeded and succeeded
+            else:
+                delivery_attempted = True
+                delivery_succeeded = succeeded
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
@@ -5998,6 +6023,15 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            # Streaming may have delivered the confirmed final response inside
+            # the handler, in which case there is intentionally no later
+            # _send_with_retry() call to observe. Honor the handler's explicit
+            # delivery marker so success-only callbacks still fire.
+            if getattr(event, "_hermes_handler_delivery_attempted", False):
+                delivery_attempted = True
+                delivery_succeeded = bool(
+                    getattr(event, "_hermes_handler_delivery_succeeded", False)
+                )
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
@@ -6188,6 +6222,8 @@ class BasePlatformAdapter(ABC):
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
+                        if _tts_caption_delivered:
+                            _record_delivery(tts_result)
                     finally:
                         for _cleanup_path in _tts_cleanup_paths:
                             try:
@@ -6302,13 +6338,17 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
+                        image_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        _record_delivery(image_result)
                     except Exception as batch_err:
+                        _record_delivery(
+                            SendResult(success=False, error=str(batch_err))
+                        )
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
 
@@ -6344,13 +6384,17 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
+                        image_result = await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
                         )
+                        _record_delivery(image_result)
                     except Exception as batch_err:
+                        _record_delivery(
+                            SendResult(success=False, error=str(batch_err))
+                        )
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
                 if _non_image_media:
@@ -6389,6 +6433,7 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
 
+                        _record_delivery(media_result)
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
                             await self._notify_media_delivery_failure(
@@ -6398,6 +6443,9 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as media_err:
+                        _record_delivery(
+                            SendResult(success=False, error=str(media_err))
+                        )
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
                 # Send auto-detected local non-image files as native attachments
@@ -6418,6 +6466,7 @@ class BasePlatformAdapter(ABC):
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
+                        _record_delivery(file_result)
                         if not file_result.success:
                             logger.warning(
                                 "[%s] Failed to send local file (%s): %s",
@@ -6431,6 +6480,9 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:
+                        _record_delivery(
+                            SendResult(success=False, error=str(file_err))
+                        )
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
                 # A3 (#29346): if a non-empty response produced nothing
@@ -6571,18 +6623,40 @@ class BasePlatformAdapter(ABC):
                     session_key,
                     generation=_callback_generation,
                 )
+                # The success-only registry is owned by the base adapter.
+                # Bypass legacy subclass overrides whose older signature does
+                # not accept ``success_only``; calling those here can abort the
+                # entire finally block and leak active-session state.
+                _post_success_cb = BasePlatformAdapter.pop_post_delivery_callback(
+                    self,
+                    session_key,
+                    generation=_callback_generation,
+                    success_only=True,
+                )
             else:
                 _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
-            if callable(_post_cb):
-                try:
-                    _post_result = _post_cb()
-                    if inspect.isawaitable(_post_result):
-                        await asyncio.wait_for(
-                            _post_result,
-                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
-                        )
-                except (asyncio.TimeoutError, Exception):
-                    pass
+                _post_success_cb = getattr(
+                    self,
+                    "_post_successful_delivery_callbacks",
+                    {},
+                ).pop(session_key, None)
+            for _post_callback, _should_fire in (
+                (_post_cb, True),
+                (
+                    _post_success_cb,
+                    bool(delivery_attempted and delivery_succeeded),
+                ),
+            ):
+                if callable(_post_callback) and _should_fire:
+                    try:
+                        _post_result = _post_callback()
+                        if inspect.isawaitable(_post_result):
+                            await asyncio.wait_for(
+                                _post_result,
+                                timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                            )
+                    except (asyncio.TimeoutError, Exception):
+                        pass
             # Some adapters keep platform-level typing tasks.  If callback
             # work or a late refresh recreated one, make one final bounded stop
             # before releasing the session guard.

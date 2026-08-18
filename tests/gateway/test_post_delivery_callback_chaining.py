@@ -79,6 +79,40 @@ class TestPostDeliveryCallbackChaining:
         _invoke(cb)
         assert fired == ["A", "B", "C"]
 
+    def test_success_only_callbacks_chain_and_reject_stale_generation(self, adapter):
+        fired = []
+        adapter.register_post_delivery_callback(
+            "s",
+            lambda: fired.append("A"),
+            generation=2,
+            success_only=True,
+        )
+        adapter.register_post_delivery_callback(
+            "s",
+            lambda: fired.append("stale"),
+            generation=1,
+            success_only=True,
+        )
+        adapter.register_post_delivery_callback(
+            "s",
+            lambda: fired.append("B"),
+            generation=2,
+            success_only=True,
+        )
+
+        assert adapter.pop_post_delivery_callback(
+            "s",
+            generation=1,
+            success_only=True,
+        ) is None
+        cb = adapter.pop_post_delivery_callback(
+            "s",
+            generation=2,
+            success_only=True,
+        )
+        _invoke(cb)
+        assert fired == ["A", "B"]
+
 
 class TestPostDeliveryCallbackAsyncChaining:
     """When an async callback is chained, the wrapper must await it.

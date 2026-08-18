@@ -1,0 +1,104 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "shareable_delivery": "none",
+  "id": "TG-9000X-CLEANUP",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Harden Telegram operation-card delivery and rate limiting",
+  "description": "Fix duplicate progress observation, retain operation cards when any final delivery fails, serialize phase edits against heartbeat edits, and account for streamed, document, video, image, and Telegram media-group delivery.",
+  "scope": {
+    "read": [
+      "gateway/run.py",
+      "gateway/platforms/base.py",
+      "gateway/operation_card.py",
+      "plugins/platforms/telegram/adapter.py",
+      "tests/gateway/test_run_cleanup_progress.py",
+      "tests/gateway/test_ephemeral_reply.py",
+      "tests/gateway/test_73771_media_resend_dedup.py",
+      "tests/gateway/test_send_multiple_images.py"
+    ],
+    "modify": [
+      "gateway/run.py",
+      "gateway/platforms/base.py",
+      "plugins/platforms/telegram/adapter.py",
+      "tests/gateway/test_run_cleanup_progress.py",
+      "tests/gateway/test_ephemeral_reply.py",
+      "tests/gateway/test_73771_media_resend_dedup.py",
+      "tests/gateway/test_post_delivery_callback_chaining.py",
+      "tests/gateway/test_send_multiple_images.py"
+    ]
+  },
+  "acceptance": [
+    "Each operation-card heartbeat observes progress exactly once.",
+    "Temporary status cards are deleted only after successful final platform delivery.",
+    "Streamed and media-only finals participate in success-only cleanup accounting.",
+    "Telegram media groups return aggregate delivery success and fail closed on partial delivery.",
+    "Phase edits and heartbeats respect the configured minimum edit interval under races.",
+    "Focused gateway regression tests and static checks pass."
+  ],
+  "verification": [
+    "venv/bin/python -m pytest tests/gateway/test_ephemeral_reply.py tests/gateway/test_post_delivery_callback_chaining.py tests/gateway/test_run_cleanup_progress.py tests/gateway/test_long_running_notifications.py tests/gateway/test_operation_card.py tests/gateway/test_send_multiple_images.py tests/gateway/test_telegram_thread_fallback.py -q -o 'addopts='"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-08-18T16:50:22+02:00"
+  },
+  "work_status": "completed",
+  "review_status": "approved",
+  "review_history": [
+    {
+      "created_at": "2026-08-18T17:37:51+02:00",
+      "agent": "hermes",
+      "status": "approved",
+      "evidence": "A: no remaining ship blockers; timed-out broad critic yielded concrete findings that were reproduced, fixed, and covered by 199 passing focused gateway tests plus repeated race/media probes.",
+      "transaction_id": "8359ddacc3d44ce5bae149a6365eee8b"
+    }
+  ],
+  "evidence": [
+    {
+      "schema": "go-workflow.finish-evidence.v1",
+      "created_at": "2026-08-18T17:37:44+02:00",
+      "task_id": "TG-9000X-CLEANUP",
+      "agent": "hermes",
+      "summary": "changed_files=gateway/platforms/base.py,gateway/run.py,plugins/platforms/telegram/adapter.py,tests/gateway/test_73771_media_resend_dedup.py,tests/gateway/test_ephemeral_reply.py,tests/gateway/test_post_delivery_callback_chaining.py,tests/gateway/test_run_cleanup_progress.py,tests/gateway/test_send_multiple_images.py; verification=HERMES_HOME=temp venv/bin/python -m pytest focused gateway suite: 199 passed rc=0; critic=A no remaining ship blockers after all concrete findings were reproduced and closed",
+      "changed_files": [
+        "gateway/platforms/base.py",
+        "gateway/run.py",
+        "plugins/platforms/telegram/adapter.py",
+        "tests/gateway/test_73771_media_resend_dedup.py",
+        "tests/gateway/test_ephemeral_reply.py",
+        "tests/gateway/test_post_delivery_callback_chaining.py",
+        "tests/gateway/test_run_cleanup_progress.py",
+        "tests/gateway/test_send_multiple_images.py"
+      ],
+      "no_diff": false,
+      "verification": {
+        "command": "HERMES_HOME=temp venv/bin/python -m pytest focused gateway suite: 199 passed rc=0",
+        "result": "HERMES_HOME=temp venv/bin/python -m pytest focused gateway suite: 199 passed rc=0"
+      },
+      "runtime": {
+        "agent": "hermes",
+        "runtime": null,
+        "model": null,
+        "billing_mode": "unknown"
+      },
+      "usage": {
+        "schema": "go-workflow.usage-attribution.v1",
+        "runtime_kind": "unknown",
+        "billing_mode": "unknown",
+        "owner": "hermes",
+        "model": null,
+        "token_estimate": null,
+        "api_equivalent_cost_usd": null,
+        "provider_invoice_cost_usd": null,
+        "cost_label": "api_equivalent_not_invoice_cost"
+      },
+      "review": {
+        "outcome": "A no remaining ship blockers after all concrete findings were reproduced and closed",
+        "skip_reason": null
+      }
+    }
+  ]
+}

@@ -76,6 +76,29 @@ class _DeleteCapableAdapter(BasePlatformAdapter):
         return True
 
 
+class _LegacyCallbackAdapter(_DeleteCapableAdapter):
+    """Old callback overrides without the new success_only keyword."""
+
+    def register_post_delivery_callback(
+        self,
+        session_key,
+        callback,
+        *,
+        generation=None,
+    ):
+        return super().register_post_delivery_callback(
+            session_key,
+            callback,
+            generation=generation,
+        )
+
+    def pop_post_delivery_callback(self, session_key, *, generation=None):
+        return super().pop_post_delivery_callback(
+            session_key,
+            generation=generation,
+        )
+
+
 def _no_delete_adapter():
     return _NoDeleteAdapter(
         PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM
@@ -202,6 +225,149 @@ async def test_process_message_unwraps_ephemeral_before_send():
     assert sent_text == "⚡ Stopped."
     # Auto-delete scheduled using the returned message_id
     assert ("42", "sent-1") in adapter.deleted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("send_success", "expected"),
+    ((True, ["cleanup"]), (False, [])),
+)
+async def test_success_only_post_delivery_callback_requires_successful_send(
+    send_success,
+    expected,
+):
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(
+            success=send_success,
+            message_id="sent-1" if send_success else None,
+            error=None if send_success else "network down",
+        )
+    )
+
+    async def _handler(evt):
+        return "final response"
+
+    adapter.set_message_handler(_handler)
+    fired = []
+    attempt_callbacks = []
+    session_key = "agent:main:telegram:private:42"
+    adapter.register_post_delivery_callback(
+        session_key,
+        lambda: attempt_callbacks.append("release"),
+    )
+    adapter.register_post_delivery_callback(
+        session_key,
+        lambda: fired.append("cleanup"),
+        success_only=True,
+    )
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()):
+        await adapter._process_message_background(_make_event(), session_key)
+
+    assert fired == expected
+    assert attempt_callbacks == ["release"]
+    assert adapter.pop_post_delivery_callback(
+        session_key,
+        success_only=True,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_streamed_delivery_marker_fires_success_only_callback_without_resend():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock()
+    fired = []
+    session_key = "agent:main:telegram:private:42"
+
+    async def _handler(evt):
+        setattr(evt, "_hermes_handler_delivery_attempted", True)
+        setattr(evt, "_hermes_handler_delivery_succeeded", True)
+        return None
+
+    adapter.set_message_handler(_handler)
+    adapter.register_post_delivery_callback(
+        session_key,
+        lambda: fired.append("cleanup"),
+        success_only=True,
+    )
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()):
+        await adapter._process_message_background(_make_event(), session_key)
+
+    adapter._send_with_retry.assert_not_awaited()
+    assert fired == ["cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_callback_overrides_do_not_break_cleanup_or_session_release():
+    adapter = _LegacyCallbackAdapter(
+        PlatformConfig(enabled=True, token="t"),
+        Platform.TELEGRAM,
+    )
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+    fired = []
+    session_key = "agent:main:telegram:private:42"
+
+    async def _handler(evt):
+        return "final response"
+
+    adapter.set_message_handler(_handler)
+    BasePlatformAdapter.register_post_delivery_callback(
+        adapter,
+        session_key,
+        lambda: fired.append("cleanup"),
+        success_only=True,
+    )
+    adapter._session_tasks[session_key] = asyncio.current_task()
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()):
+        await adapter._process_message_background(_make_event(), session_key)
+
+    assert fired == ["cleanup"]
+    assert session_key not in adapter._active_sessions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("send_success", "expected_callbacks"),
+    [(True, ["cleanup"]), (False, [])],
+)
+async def test_document_only_final_controls_success_cleanup(
+    tmp_path,
+    send_success,
+    expected_callbacks,
+):
+    adapter = _delete_adapter()
+    document = tmp_path / "proof.pdf"
+    document.write_bytes(b"%PDF-1.4\n")
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(
+            success=send_success,
+            message_id="doc-1" if send_success else None,
+            error=None if send_success else "upload failed",
+        )
+    )
+    fired = []
+    session_key = "agent:main:telegram:private:42"
+
+    async def _handler(evt):
+        return f"MEDIA:{document}"
+
+    adapter.set_message_handler(_handler)
+    adapter.register_post_delivery_callback(
+        session_key,
+        lambda: fired.append("cleanup"),
+        success_only=True,
+    )
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()):
+        await adapter._process_message_background(_make_event(), session_key)
+
+    adapter.send_document.assert_awaited_once()
+    assert fired == expected_callbacks
 
 
 @pytest.mark.asyncio

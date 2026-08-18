@@ -17461,12 +17461,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
+                # Streaming already delivered the confirmed final body. Fold
+                # every trailing media/footer delivery into one success bit so
+                # operation-card cleanup only runs after the full final payload
+                # lands.
+                _handler_delivery_succeeded = True
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
-                        await self._deliver_media_from_response(
+                        (
+                            _media_delivery_attempted,
+                            _media_delivery_succeeded,
+                        ) = await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                        if _media_delivery_attempted:
+                            _handler_delivery_succeeded = (
+                                _handler_delivery_succeeded
+                                and _media_delivery_succeeded
+                            )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -17475,13 +17488,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _foot_adapter = self._adapter_for_source(source)
                         if _foot_adapter:
-                            await _foot_adapter.send(
+                            _footer_result = await _foot_adapter.send(
                                 source.chat_id,
                                 _footer_line,
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
                             )
+                            _handler_delivery_succeeded = (
+                                _handler_delivery_succeeded
+                                and bool(getattr(_footer_result, "success", False))
+                            )
                     except Exception as _e:
+                        _handler_delivery_succeeded = False
                         logger.debug("trailing footer send failed: %s", _e)
+                setattr(event, "_hermes_handler_delivery_attempted", True)
+                setattr(
+                    event,
+                    "_hermes_handler_delivery_succeeded",
+                    _handler_delivery_succeeded,
+                )
                 return None
 
             return response
@@ -18564,7 +18588,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
-    ) -> None:
+    ) -> tuple[bool, bool]:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
         Called after streaming has already sent the text to the user, so the
@@ -18584,6 +18608,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from pathlib import Path
         from urllib.parse import quote as _quote
 
+        delivery_attempted = False
+        delivery_succeeded = True
+
+        def _record_delivery(result) -> None:
+            nonlocal delivery_attempted, delivery_succeeded
+            delivery_attempted = True
+            delivery_succeeded = delivery_succeeded and bool(
+                getattr(result, "success", False)
+            )
+
         try:
             # Capture [[as_document]] before extract_media strips it, so the
             # dispatch partition below can route image-extension files
@@ -18594,7 +18628,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
+            delivery_attempted = bool(media_files)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            if delivery_attempted and not media_files:
+                delivery_succeeded = False
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
@@ -18633,40 +18670,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    image_result = await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
                     )
+                    _record_delivery(image_result)
                 except Exception as e:
+                    delivery_succeeded = False
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        media_result = await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
+                        media_result = await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
                     else:
-                        await adapter.send_document(
+                        media_result = await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
                         )
+                    _record_delivery(media_result)
                 except Exception as e:
+                    delivery_attempted = True
+                    delivery_succeeded = False
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
         except Exception as e:
+            delivery_succeeded = False
             logger.warning("Post-stream media extraction failed: %s", e)
+
+        return delivery_attempted, delivery_attempted and delivery_succeeded
 
 
 
@@ -24032,6 +24077,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _operation_card_phase_event = asyncio.Event()
         _operation_card_update_lock = asyncio.Lock()
         _operation_card_last_edit: list[float] = [0.0]
+        _operation_card_terminal: list[bool] = [False]
         try:
             _operation_card_phase_interval_raw = float(
                 resolve_display_setting(
@@ -24129,28 +24175,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             *,
             status: str = "running",
         ):
-            async with _operation_card_update_lock:
-                previous_id = _operation_card_message_id[0]
-                result, next_id = await _send_long_running_heartbeat_coro(
-                    adapter,
-                    source.chat_id,
-                    _operation_card_text(agent_ref, status=status),
-                    _non_conversational_metadata(
-                        _status_thread_metadata,
-                        platform=source.platform,
-                    ),
-                    append_only=False,
-                    message_id=previous_id,
-                )
-                if next_id:
-                    _operation_card_message_id[0] = next_id
-                    _operation_card_last_edit[0] = time.monotonic()
-                    if (
-                        _cleanup_progress
-                        and next_id not in _cleanup_msg_ids
-                    ):
-                        _cleanup_msg_ids.append(next_id)
-                return result, next_id
+            while True:
+                delay = 0.0
+                async with _operation_card_update_lock:
+                    if status == "running" and _operation_card_terminal[0]:
+                        return None, _operation_card_message_id[0]
+
+                    previous_id = _operation_card_message_id[0]
+                    # Running edits share one lock and deadline. Recompute after
+                    # every acquire so a heartbeat that wins the race pushes a
+                    # queued phase edit forward. Sleep outside the lock so a
+                    # terminal edit can overtake and close the card promptly.
+                    if previous_id and status == "running":
+                        delay = _operation_card_phase_interval - (
+                            time.monotonic() - _operation_card_last_edit[0]
+                        )
+                    if delay <= 0:
+                        if status != "running":
+                            _operation_card_terminal[0] = True
+                        result, next_id = await _send_long_running_heartbeat_coro(
+                            adapter,
+                            source.chat_id,
+                            _operation_card_text(agent_ref, status=status),
+                            _non_conversational_metadata(
+                                _status_thread_metadata,
+                                platform=source.platform,
+                            ),
+                            append_only=False,
+                            message_id=previous_id,
+                        )
+                        if next_id:
+                            _operation_card_message_id[0] = next_id
+                            _operation_card_last_edit[0] = time.monotonic()
+                            if (
+                                _cleanup_progress
+                                and next_id not in _cleanup_msg_ids
+                            ):
+                                _cleanup_msg_ids.append(next_id)
+                        return result, next_id
+
+                await asyncio.sleep(delay)
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -24202,13 +24266,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not turn_ctx.first_progress_deadline.should_notify():
                         continue
                     _heartbeat_text = (
-                        _operation_card_text(_agent_ref)
+                        None
                         if _operation_cards_enabled
                         else "⏳ 1 min — run is actief; nog geen tool of inhoudelijke tussenstatus"
                     )
                 else:
                     _heartbeat_text = (
-                        _operation_card_text(_agent_ref)
+                        None
                         if _operation_cards_enabled
                         else (
                             _generic_status_phrase("status")
@@ -24269,21 +24333,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if not _operation_card_message_id[0]:
                     continue
-
-                while True:
-                    remaining = _operation_card_phase_interval - (
-                        time.monotonic() - _operation_card_last_edit[0]
-                    )
-                    if remaining <= 0:
-                        break
-                    try:
-                        await asyncio.wait_for(
-                            _operation_card_phase_event.wait(),
-                            timeout=remaining,
-                        )
-                        _operation_card_phase_event.clear()
-                    except asyncio.TimeoutError:
-                        break
 
                 try:
                     _exec_ref = _executor_task
@@ -25128,10 +25177,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
             try:
-                _cleanup_adapter.register_post_delivery_callback(
+                # The success-only registry is implemented and owned by the
+                # base adapter. Call it directly so legacy subclasses with an
+                # older override signature cannot silently block cleanup.
+                BasePlatformAdapter.register_post_delivery_callback(
+                    _cleanup_adapter,
                     session_key,
                     _cleanup_temp_bubbles,
                     generation=run_generation,
+                    success_only=True,
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
