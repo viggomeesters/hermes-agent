@@ -300,7 +300,8 @@ async def test_streamed_delivery_outcome_fires_success_only_callback_without_res
 
 
 @pytest.mark.asyncio
-async def test_streamed_partial_delivery_outcome_retains_success_only_callback():
+async def test_streamed_partial_delivery_outcome_retains_success_only_callback(caplog):
+    caplog.set_level(logging.INFO, logger="gateway.platforms.base")
     adapter = _delete_adapter()
     adapter._send_with_retry = AsyncMock()
     fired = []
@@ -323,6 +324,48 @@ async def test_streamed_partial_delivery_outcome_retains_success_only_callback()
 
     adapter._send_with_retry.assert_not_awaited()
     assert fired == []
+    assert not any(
+        getattr(record, "operation_card_event", None) == "retained"
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_success_only_failure_hook_is_attributed_and_chained():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock()
+    fired = []
+    retained = []
+    session_key = "agent:main:telegram:private:42"
+
+    async def _handler(evt):
+        evt.delivery_outcome.record_failure("final delivery failed")
+        return None
+
+    def cleanup_one():
+        fired.append("one")
+
+    def cleanup_two():
+        fired.append("two")
+
+    cleanup_two._hermes_on_delivery_failed = lambda: retained.append("operation-card")
+    adapter.set_message_handler(_handler)
+    adapter.register_post_delivery_callback(
+        session_key,
+        cleanup_one,
+        success_only=True,
+    )
+    adapter.register_post_delivery_callback(
+        session_key,
+        cleanup_two,
+        success_only=True,
+    )
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()):
+        await adapter._process_message_background(_make_event(), session_key)
+
+    assert fired == []
+    assert retained == ["operation-card"]
 
 
 @pytest.mark.asyncio

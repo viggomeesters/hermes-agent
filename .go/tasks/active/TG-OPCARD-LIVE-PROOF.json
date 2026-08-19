@@ -17,7 +17,13 @@
     ],
     "modify": [
       "tests/runtime/test_operation_card_live_probe.py",
-      "tests/gateway/test_73771_media_resend_dedup.py"
+      "tests/gateway/test_73771_media_resend_dedup.py",
+      "gateway/operation_card_controller.py",
+      "gateway/platforms/base.py",
+      "gateway/run.py",
+      "tests/gateway/test_operation_card_controller.py",
+      "tests/gateway/test_run_cleanup_progress.py",
+      "tests/gateway/test_ephemeral_reply.py"
     ]
   },
   "acceptance": [
