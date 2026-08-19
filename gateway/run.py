@@ -2361,6 +2361,7 @@ from gateway.delivery import (
     looks_like_telegram_private_chat_id,
     resolve_delivery_transport,
 )
+from gateway.operation_card_controller import OperationCardController
 from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.session_state import (
     SERVICE_TIER_UNSET as _SERVICE_TIER_UNSET,
@@ -24050,13 +24051,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _long_running_mode == "off":
             _NOTIFY_INTERVAL = None
         _notify_start = time.time()
-        _operation_card_message_id: list[Optional[str]] = [None]
-        _operation_card_phase: list[Optional[str]] = [None]
-        _operation_card_phase_event = asyncio.Event()
-        _operation_card_update_lock = asyncio.Lock()
-        _operation_card_last_edit: list[float] = [0.0]
-        _operation_card_last_semantic_key: list[Optional[str]] = [None]
-        _operation_card_terminal: list[bool] = [False]
         try:
             _operation_card_phase_interval_raw = float(
                 resolve_display_setting(
@@ -24087,16 +24081,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _operation_tracker = None
 
         _operation_card_loop = asyncio.get_running_loop()
-
-        def _request_operation_card_phase_update(event_type: str, tool_name: str) -> None:
-            del event_type
-            if not _operation_cards_enabled:
-                return
-            _operation_card_phase[0] = " ".join(str(tool_name).split("_")).strip()
-            _operation_card_loop.call_soon_threadsafe(_operation_card_phase_event.set)
+        _operation_card_controller = OperationCardController(
+            enabled=_operation_cards_enabled,
+            phase_interval=_operation_card_phase_interval,
+            cleanup_enabled=_cleanup_progress,
+            cleanup_message_ids=_cleanup_msg_ids,
+            loop=_operation_card_loop,
+        )
 
         turn_ctx._operation_card_phase_callback = (
-            _request_operation_card_phase_update
+            _operation_card_controller.request_phase_update
             if _operation_cards_enabled
             else None
         )
@@ -24109,7 +24103,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     activity = {}
             phase = (
-                _operation_card_phase[0]
+                _operation_card_controller.phase
                 or activity.get("current_tool")
                 or activity.get("last_activity_desc")
                 or activity.get("description")
@@ -24148,13 +24142,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             return render_operation_card(_operation_tracker.observe(snapshot))
 
-        def _operation_card_semantic_key(text: str) -> str:
-            """Ignore the liveness timestamp when coalescing phase-only edits."""
-            return "\n".join(
-                line for line in text.splitlines()
-                if not line.startswith("Bijgewerkt:")
-            )
-
         async def _send_operation_card_update(
             adapter,
             agent_ref,
@@ -24162,56 +24149,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             status: str = "running",
             dedupe_unchanged: bool = False,
         ):
-            while True:
-                delay = 0.0
-                async with _operation_card_update_lock:
-                    if status == "running" and _operation_card_terminal[0]:
-                        return None, _operation_card_message_id[0]
+            async def _send(previous_id: Optional[str], card_text: str):
+                return await _send_long_running_heartbeat_coro(
+                    adapter,
+                    source.chat_id,
+                    card_text,
+                    _non_conversational_metadata(
+                        _status_thread_metadata,
+                        platform=source.platform,
+                    ),
+                    append_only=False,
+                    message_id=previous_id,
+                )
 
-                    previous_id = _operation_card_message_id[0]
-                    # Running edits share one lock and deadline. Recompute after
-                    # every acquire so a heartbeat that wins the race pushes a
-                    # queued phase edit forward. Sleep outside the lock so a
-                    # terminal edit can overtake and close the card promptly.
-                    if previous_id and status == "running":
-                        delay = _operation_card_phase_interval - (
-                            time.monotonic() - _operation_card_last_edit[0]
-                        )
-                    if delay <= 0:
-                        if status != "running":
-                            _operation_card_terminal[0] = True
-                        card_text = _operation_card_text(agent_ref, status=status)
-                        semantic_key = _operation_card_semantic_key(card_text)
-                        if (
-                            dedupe_unchanged
-                            and status == "running"
-                            and previous_id
-                            and semantic_key == _operation_card_last_semantic_key[0]
-                        ):
-                            return None, previous_id
-                        result, next_id = await _send_long_running_heartbeat_coro(
-                            adapter,
-                            source.chat_id,
-                            card_text,
-                            _non_conversational_metadata(
-                                _status_thread_metadata,
-                                platform=source.platform,
-                            ),
-                            append_only=False,
-                            message_id=previous_id,
-                        )
-                        if next_id:
-                            _operation_card_message_id[0] = next_id
-                            _operation_card_last_edit[0] = time.monotonic()
-                            _operation_card_last_semantic_key[0] = semantic_key
-                            if (
-                                _cleanup_progress
-                                and next_id not in _cleanup_msg_ids
-                            ):
-                                _cleanup_msg_ids.append(next_id)
-                        return result, next_id
-
-                await asyncio.sleep(delay)
+            return await _operation_card_controller.update(
+                render=lambda: _operation_card_text(agent_ref, status=status),
+                send=_send,
+                status=status,
+                dedupe_unchanged=dedupe_unchanged,
+            )
 
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
@@ -24219,7 +24175,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _notify_adapter = self._adapter_for_source(source)
             if not _notify_adapter:
                 return
-            _heartbeat_msg_id: Optional[str] = _operation_card_message_id[0]
+            _heartbeat_msg_id: Optional[str] = _operation_card_controller.message_id
             _has_early_deadline = (
                 0 < _FIRST_NOTIFY_DELAY < _NOTIFY_INTERVAL
             )
@@ -24306,7 +24262,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     if _next_heartbeat_msg_id != _heartbeat_msg_id:
                         _heartbeat_msg_id = _next_heartbeat_msg_id
-                        _operation_card_message_id[0] = _heartbeat_msg_id
                         if (
                             _cleanup_progress
                             and _heartbeat_msg_id
@@ -24320,15 +24275,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not _operation_cards_enabled:
                 return
             while True:
-                await _operation_card_phase_event.wait()
-                _operation_card_phase_event.clear()
+                await _operation_card_controller.phase_event.wait()
+                _operation_card_controller.clear_phase_event()
                 logger.debug(
                     "Operation-card phase event: phase=%s message_id=%s interval=%s",
-                    _operation_card_phase[0],
-                    _operation_card_message_id[0],
-                    _operation_card_phase_interval,
+                    _operation_card_controller.phase,
+                    _operation_card_controller.message_id,
+                    _operation_card_controller.phase_interval,
                 )
-                if not _operation_card_message_id[0]:
+                if not _operation_card_controller.message_id:
                     continue
 
                 try:
@@ -25038,7 +24993,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except asyncio.CancelledError:
                         pass
 
-            if _operation_cards_enabled and _operation_card_message_id[0]:
+            if _operation_cards_enabled and _operation_card_controller.message_id:
                 try:
                     if (
                         _interrupt_detected.is_set()
