@@ -15,6 +15,79 @@ from gateway.platforms.base import SendResult
 from gateway.run import _load_gateway_config
 
 
+def _assert_live_timing(
+    *,
+    creation_delay: float,
+    phase_gap: float,
+    heartbeat_from_start: float,
+    operation_count: int,
+    first_delay: float = 10.0,
+    phase_interval: float = 15.0,
+    notify_interval: float = 180.0,
+) -> None:
+    assert first_delay - 0.5 <= creation_delay <= first_delay + 10.0
+    assert phase_interval - 0.5 <= phase_gap <= phase_interval + 10.0
+    assert notify_interval - 0.5 <= heartbeat_from_start <= notify_interval + 10.0
+    assert operation_count == 4
+
+
+async def _delete_live_probe_message(bot, *, chat_id: str, message_id: str) -> bool:
+    try:
+        deleted = bool(
+            await bot.delete_message(
+                chat_id=chat_id,
+                message_id=int(message_id),
+            )
+        )
+    except Exception as exc:
+        raise AssertionError(
+            f"Telegram live-probe cleanup failed; retained message_id={message_id}"
+        ) from exc
+    if not deleted:
+        raise AssertionError(
+            f"Telegram live-probe cleanup failed; retained message_id={message_id}"
+        )
+    return True
+
+
+@pytest.mark.parametrize(
+    ("creation_delay", "phase_gap", "heartbeat_from_start", "operation_count"),
+    [
+        (60.0, 15.0, 180.0, 4),
+        (10.0, 40.0, 180.0, 4),
+        (10.0, 15.0, 25.0, 4),
+        (10.0, 15.0, 180.0, 1),
+    ],
+)
+def test_live_timing_policy_rejects_false_positive_proof(
+    creation_delay,
+    phase_gap,
+    heartbeat_from_start,
+    operation_count,
+):
+    with pytest.raises(AssertionError):
+        _assert_live_timing(
+            creation_delay=creation_delay,
+            phase_gap=phase_gap,
+            heartbeat_from_start=heartbeat_from_start,
+            operation_count=operation_count,
+        )
+
+
+@pytest.mark.asyncio
+async def test_live_cleanup_failure_reports_retained_message_id():
+    class DeleteFails:
+        async def delete_message(self, **kwargs):
+            return False
+
+    with pytest.raises(AssertionError, match="retained message_id=4242"):
+        await _delete_live_probe_message(
+            DeleteFails(),
+            chat_id="home",
+            message_id="4242",
+        )
+
+
 @pytest.mark.asyncio
 async def test_failed_delivery_probe_retains_card_breadcrumb():
     cleanup_ids: list[str] = []
@@ -139,14 +212,22 @@ async def test_live_telegram_operation_card_10_15_180_and_cleanup():
             status="completed",
         )
 
-        assert created_at - started >= first_delay - 0.5
-        assert send_times[1] - created_at >= phase_interval - 0.5
-        assert heartbeat_at - started <= notify_interval + 5.0
+        _assert_live_timing(
+            creation_delay=created_at - started,
+            phase_gap=send_times[1] - created_at,
+            heartbeat_from_start=heartbeat_at - started,
+            operation_count=len(send_times),
+            first_delay=first_delay,
+            phase_interval=phase_interval,
+            notify_interval=notify_interval,
+        )
         assert len(set(message_ids)) == 1
         assert cleanup_ids == [message_ids[0]]
 
-        deleted = bool(
-            await bot.delete_message(chat_id=chat_id, message_id=int(message_ids[0]))
+        deleted = await _delete_live_probe_message(
+            bot,
+            chat_id=chat_id,
+            message_id=message_ids[0],
         )
         assert deleted is True
         controller.record_removed("live_probe_cleanup_succeeded")
@@ -167,12 +248,17 @@ async def test_live_telegram_operation_card_10_15_180_and_cleanup():
             )
         )
     finally:
-        if message_ids and not deleted:
-            try:
-                await bot.delete_message(
+        cleanup_error = None
+        try:
+            if message_ids and not deleted:
+                deleted = await _delete_live_probe_message(
+                    bot,
                     chat_id=chat_id,
-                    message_id=int(message_ids[0]),
+                    message_id=message_ids[0],
                 )
-            except Exception:
-                pass
-        await bot.shutdown()
+        except AssertionError as exc:
+            cleanup_error = exc
+        finally:
+            await bot.shutdown()
+        if cleanup_error is not None:
+            raise cleanup_error
