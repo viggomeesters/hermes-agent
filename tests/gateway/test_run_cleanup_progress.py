@@ -13,6 +13,7 @@ Adapters without ``delete_message`` silently no-op.
 import asyncio
 import importlib
 import inspect as _inspect
+import logging
 import sys
 import time
 import types
@@ -391,9 +392,10 @@ async def test_cleanup_coexists_with_existing_callback(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_operation_card_tracks_phase_changes_and_is_removed_after_final_delivery(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, caplog
 ):
     """The single long-run card is live during work and disappears after success."""
+    caplog.set_level(logging.INFO, logger="gateway.operation_card_controller")
     adapter = CleanupCaptureAdapter()
     runner = _make_runner(adapter)
     gateway_run = _install_fakes(
@@ -439,6 +441,55 @@ async def test_operation_card_tracks_phase_changes_and_is_removed_after_final_de
             break
 
     assert {item["message_id"] for item in adapter.deleted} == {card_id}
+    assert any(
+        getattr(record, "operation_card_event", None) == "removed"
+        and getattr(record, "operation_card_reason", None)
+        == "final_delivery_succeeded"
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_operation_card_is_retained_with_structured_reason(
+    monkeypatch,
+    tmp_path,
+    caplog,
+):
+    caplog.set_level(logging.INFO, logger="gateway.operation_card_controller")
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        FailingAgent,
+        cleanup_on=True,
+        platform_display={
+            "operation_cards": True,
+            "long_running_notifications": True,
+            "operation_card_phase_update_interval": 0.01,
+            "tool_progress": False,
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_FIRST_NOTIFY_DELAY", "0.06")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "1")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1005"),
+        session_id="sess-retained",
+        session_key="agent:main:telegram:group:-1005",
+    )
+
+    assert result["failed"] is True
+    assert adapter.sent
+    assert adapter.deleted == []
+    assert any(
+        getattr(record, "operation_card_event", None) == "retained"
+        and getattr(record, "operation_card_reason", None) == "agent_run_failed"
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio

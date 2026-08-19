@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -120,3 +121,46 @@ async def test_controller_phase_callback_updates_phase_and_event():
     await asyncio.wait_for(controller.phase_event.wait(), timeout=0.2)
 
     assert controller.phase == "read file"
+
+
+@pytest.mark.asyncio
+async def test_controller_emits_bounded_structured_lifecycle_events(caplog):
+    caplog.set_level(logging.INFO, logger="gateway.operation_card_controller")
+    responses = [
+        (SendResult(success=True, message_id="card-1"), "card-1"),
+        (SendResult(success=True, message_id="card-1"), "card-1"),
+    ]
+
+    async def send(previous_id, text):
+        return responses.pop(0)
+
+    controller = OperationCardController(
+        enabled=True,
+        phase_interval=0,
+        context_id="ctx-123",
+    )
+    await controller.update(render=lambda: "phase one", send=send)
+    await controller.update(
+        render=lambda: "phase one",
+        send=send,
+        dedupe_unchanged=True,
+    )
+    await controller.update(render=lambda: "phase two", send=send)
+    controller.record_retained("final_delivery_failed")
+    controller.record_removed("final_delivery_succeeded")
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "operation_card_event", None)
+    ]
+    assert [record.operation_card_event for record in records] == [
+        "created",
+        "coalesced",
+        "edited",
+        "retained",
+        "removed",
+    ]
+    assert {record.operation_card_context for record in records} == {"ctx-123"}
+    assert all(record.getMessage() == "operation_card_lifecycle" for record in records)
+    assert all("phase one" not in record.getMessage() for record in records)

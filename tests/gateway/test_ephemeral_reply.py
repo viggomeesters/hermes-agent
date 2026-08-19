@@ -21,6 +21,7 @@ Covered:
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -351,6 +352,32 @@ async def test_reused_event_starts_with_a_fresh_delivery_outcome():
     assert fired == ["cleanup"]
     assert event.delivery_outcome.failed_count == 0
     assert event.delivery_outcome.message_ids == ["second"]
+
+
+def test_post_delivery_generation_mismatch_emits_structured_event(caplog):
+    caplog.set_level(logging.INFO, logger="gateway.platforms.base")
+    adapter = _delete_adapter()
+    adapter.register_post_delivery_callback(
+        "session-key",
+        lambda: None,
+        generation=2,
+        success_only=True,
+    )
+
+    assert adapter.pop_post_delivery_callback(
+        "session-key",
+        generation=1,
+        success_only=True,
+    ) is None
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "operation_card_event", None) == "generation_mismatch"
+    ]
+    assert len(records) == 1
+    assert records[0].getMessage() == "operation_card_lifecycle"
+    assert "session-key" not in records[0].getMessage()
 
 
 @pytest.mark.asyncio
