@@ -23,6 +23,7 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
+from gateway.delivery import DeliveryOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -2199,6 +2200,14 @@ class MessageEvent:
     # consume via ``event.metadata.get(...)`` and must not rely on any
     # particular key existing.
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Internal cumulative delivery evidence used by success-only lifecycle
+    # callbacks. Each event owns a fresh instance; adapters never serialize it.
+    delivery_outcome: DeliveryOutcome = field(
+        default_factory=DeliveryOutcome,
+        repr=False,
+        compare=False,
+    )
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
@@ -6005,20 +6014,12 @@ class BasePlatformAdapter(ABC):
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
-        # Track delivery outcomes for the processing-complete hook
-        delivery_attempted = False
-        delivery_succeeded = False
+        # Track every user-visible delivery through the event-owned outcome.
+        event.delivery_outcome = DeliveryOutcome()
+        delivery_outcome = event.delivery_outcome
 
         def _record_delivery(result):
-            nonlocal delivery_attempted, delivery_succeeded
-            if result is None:
-                return
-            succeeded = bool(getattr(result, "success", False))
-            if delivery_attempted:
-                delivery_succeeded = delivery_succeeded and succeeded
-            else:
-                delivery_attempted = True
-                delivery_succeeded = succeeded
+            delivery_outcome.record_result(result)
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
@@ -6059,15 +6060,6 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
-            # Streaming may have delivered the confirmed final response inside
-            # the handler, in which case there is intentionally no later
-            # _send_with_retry() call to observe. Honor the handler's explicit
-            # delivery marker so success-only callbacks still fire.
-            if getattr(event, "_hermes_handler_delivery_attempted", False):
-                delivery_attempted = True
-                delivery_succeeded = bool(
-                    getattr(event, "_hermes_handler_delivery_succeeded", False)
-                )
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
@@ -6524,7 +6516,7 @@ class BasePlatformAdapter(ABC):
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
-                    delivery_attempted or _tts_caption_delivered
+                    delivery_outcome.attempted or _tts_caption_delivered
                     or images or local_files or media_files
                 )
                 if not _anything_delivered and _response_pre_extract.strip():
@@ -6536,7 +6528,11 @@ class BasePlatformAdapter(ABC):
                     )
 
             # Determine overall success for the processing hook
-            processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            processing_ok = (
+                delivery_outcome.cleanup_succeeded
+                if delivery_outcome.attempted
+                else not bool(response)
+            )
             # Clean up the per-turn streaming-TTS flag (#60671).
             self._streaming_tts_completed_turns.discard(
                 self._streaming_tts_turn_key(
@@ -6680,7 +6676,7 @@ class BasePlatformAdapter(ABC):
                 (_post_cb, True),
                 (
                     _post_success_cb,
-                    bool(delivery_attempted and delivery_succeeded),
+                    delivery_outcome.cleanup_succeeded,
                 ),
             ):
                 if callable(_post_callback) and _should_fire:

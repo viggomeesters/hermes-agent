@@ -78,7 +78,7 @@ async def test_bare_local_path_in_streamed_reply_is_not_uploaded(tmp_path, monke
     media_file = _allowed_media_path(tmp_path, monkeypatch, "mockup.png")
     adapter = _adapter()
 
-    await GatewayRunner._deliver_media_from_response(
+    outcome = await GatewayRunner._deliver_media_from_response(
         _fake_runner({}),
         f"The design lives at {media_file} if you want to look later.",
         _event(),
@@ -90,6 +90,7 @@ async def test_bare_local_path_in_streamed_reply_is_not_uploaded(tmp_path, monke
     adapter.send_document.assert_not_awaited()
     adapter.send_video.assert_not_awaited()
     adapter.send_voice.assert_not_awaited()
+    assert outcome.attempted is False
 
 
 @pytest.mark.asyncio
@@ -98,7 +99,7 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     media_file = _allowed_media_path(tmp_path, monkeypatch, "chart.png")
     adapter = _adapter()
 
-    await GatewayRunner._deliver_media_from_response(
+    outcome = await GatewayRunner._deliver_media_from_response(
         _fake_runner({}),
         f"Here is the chart.\nMEDIA:{media_file}",
         _event(),
@@ -109,5 +110,61 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     images_kwargs = adapter.send_multiple_images.await_args.kwargs
     assert images_kwargs["chat_id"] == "C123CHAN"
     assert str(media_file) in images_kwargs["images"][0][0]
+    assert outcome.cleanup_succeeded is True
+    assert outcome.message_ids == ["imgs"]
+
+
+@pytest.mark.asyncio
+async def test_rejected_explicit_media_is_a_failed_delivery_attempt(tmp_path, monkeypatch):
+    media_file = tmp_path / "outside-safe-root.png"
+    media_file.write_bytes(b"media")
+    safe_root = tmp_path / "safe"
+    safe_root.mkdir()
+    monkeypatch.setattr(
+        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        (safe_root,),
+    )
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+    adapter = _adapter()
+
+    outcome = await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}),
+        f"MEDIA:{media_file}",
+        _event(),
+        adapter,
+    )
+
+    assert outcome.attempted_count == 1
+    assert outcome.failed_count == 1
+    assert outcome.cleanup_succeeded is False
+    adapter.send_multiple_images.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mixed_post_stream_media_requires_every_attempt_to_succeed(
+    tmp_path,
+    monkeypatch,
+):
+    image = _allowed_media_path(tmp_path, monkeypatch, "chart.png")
+    document = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    adapter = _adapter()
+    adapter.send_document.return_value = SendResult(
+        success=False,
+        error="document failed",
+    )
+
+    outcome = await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}),
+        f"MEDIA:{image}\nMEDIA:{document}",
+        _event(),
+        adapter,
+    )
+
+    assert outcome.attempted_count == 2
+    assert outcome.succeeded_count == 1
+    assert outcome.failed_count == 1
+    assert outcome.cleanup_succeeded is False
+    assert outcome.last_error == "document failed"
 
 

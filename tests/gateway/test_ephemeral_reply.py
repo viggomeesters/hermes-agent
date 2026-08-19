@@ -274,15 +274,14 @@ async def test_success_only_post_delivery_callback_requires_successful_send(
 
 
 @pytest.mark.asyncio
-async def test_streamed_delivery_marker_fires_success_only_callback_without_resend():
+async def test_streamed_delivery_outcome_fires_success_only_callback_without_resend():
     adapter = _delete_adapter()
     adapter._send_with_retry = AsyncMock()
     fired = []
     session_key = "agent:main:telegram:private:42"
 
     async def _handler(evt):
-        setattr(evt, "_hermes_handler_delivery_attempted", True)
-        setattr(evt, "_hermes_handler_delivery_succeeded", True)
+        evt.delivery_outcome.record_success(already_sent=True)
         return None
 
     adapter.set_message_handler(_handler)
@@ -297,6 +296,61 @@ async def test_streamed_delivery_marker_fires_success_only_callback_without_rese
 
     adapter._send_with_retry.assert_not_awaited()
     assert fired == ["cleanup"]
+
+
+@pytest.mark.asyncio
+async def test_streamed_partial_delivery_outcome_retains_success_only_callback():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock()
+    fired = []
+    session_key = "agent:main:telegram:private:42"
+
+    async def _handler(evt):
+        evt.delivery_outcome.record_success(already_sent=True)
+        evt.delivery_outcome.record_failure("trailing media failed")
+        return None
+
+    adapter.set_message_handler(_handler)
+    adapter.register_post_delivery_callback(
+        session_key,
+        lambda: fired.append("cleanup"),
+        success_only=True,
+    )
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()):
+        await adapter._process_message_background(_make_event(), session_key)
+
+    adapter._send_with_retry.assert_not_awaited()
+    assert fired == []
+
+
+@pytest.mark.asyncio
+async def test_reused_event_starts_with_a_fresh_delivery_outcome():
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="second")
+    )
+    event = _make_event()
+    event.delivery_outcome.record_failure("stale first attempt")
+    session_key = "agent:main:telegram:private:42"
+    fired = []
+
+    async def _handler(evt):
+        return "second response"
+
+    adapter.set_message_handler(_handler)
+    adapter.register_post_delivery_callback(
+        session_key,
+        lambda: fired.append("cleanup"),
+        success_only=True,
+    )
+
+    with patch.object(adapter, "_keep_typing", new=AsyncMock()):
+        await adapter._process_message_background(event, session_key)
+
+    assert fired == ["cleanup"]
+    assert event.delivery_outcome.failed_count == 0
+    assert event.delivery_outcome.message_ids == ["second"]
 
 
 @pytest.mark.asyncio

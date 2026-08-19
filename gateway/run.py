@@ -2356,6 +2356,7 @@ from gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from gateway.delivery import (
+    DeliveryOutcome,
     DeliveryRouter,
     looks_like_telegram_private_chat_id,
     resolve_delivery_transport,
@@ -17461,25 +17462,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
-                # Streaming already delivered the confirmed final body. Fold
-                # every trailing media/footer delivery into one success bit so
-                # operation-card cleanup only runs after the full final payload
-                # lands.
-                _handler_delivery_succeeded = True
+                # Streaming already delivered the confirmed final body. Record
+                # it in the event-owned cumulative outcome, then fold trailing
+                # media/footer attempts into the same all-success policy.
+                event.delivery_outcome.record_success(already_sent=True)
                 if response:
                     _media_adapter = self._adapter_for_source(source)
                     if _media_adapter:
-                        (
-                            _media_delivery_attempted,
-                            _media_delivery_succeeded,
-                        ) = await self._deliver_media_from_response(
+                        _media_outcome = await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
-                        if _media_delivery_attempted:
-                            _handler_delivery_succeeded = (
-                                _handler_delivery_succeeded
-                                and _media_delivery_succeeded
-                            )
+                        event.delivery_outcome.merge(_media_outcome)
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
                 # Send it now as a small trailing message so Telegram/Discord/etc.
@@ -17493,19 +17486,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _footer_line,
                                 metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
                             )
-                            _handler_delivery_succeeded = (
-                                _handler_delivery_succeeded
-                                and bool(getattr(_footer_result, "success", False))
-                            )
+                            event.delivery_outcome.record_result(_footer_result)
                     except Exception as _e:
-                        _handler_delivery_succeeded = False
+                        event.delivery_outcome.record_failure(str(_e))
                         logger.debug("trailing footer send failed: %s", _e)
-                setattr(event, "_hermes_handler_delivery_attempted", True)
-                setattr(
-                    event,
-                    "_hermes_handler_delivery_succeeded",
-                    _handler_delivery_succeeded,
-                )
                 return None
 
             return response
@@ -18588,7 +18572,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
-    ) -> tuple[bool, bool]:
+    ) -> DeliveryOutcome:
         """Extract explicit MEDIA: tags from a response and deliver them.
 
         Called after streaming has already sent the text to the user, so the
@@ -18608,15 +18592,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from pathlib import Path
         from urllib.parse import quote as _quote
 
-        delivery_attempted = False
-        delivery_succeeded = True
+        outcome = DeliveryOutcome()
 
         def _record_delivery(result) -> None:
-            nonlocal delivery_attempted, delivery_succeeded
-            delivery_attempted = True
-            delivery_succeeded = delivery_succeeded and bool(
-                getattr(result, "success", False)
-            )
+            outcome.record_result(result)
 
         try:
             # Capture [[as_document]] before extract_media strips it, so the
@@ -18628,10 +18607,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, cleaned = adapter.extract_media(response)
-            delivery_attempted = bool(media_files)
+            explicit_media_count = len(media_files)
             media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-            if delivery_attempted and not media_files:
-                delivery_succeeded = False
+            for _ in range(explicit_media_count - len(media_files)):
+                outcome.record_failure("Explicit media path was rejected")
             # Do NOT deduplicate explicit MEDIA tags against prior turns here
             # (#73771). This rescan is already EXPLICIT-ONLY (see docstring):
             # a MEDIA: directive in the final streamed reply is the model
@@ -18677,7 +18656,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                     _record_delivery(image_result)
                 except Exception as e:
-                    delivery_succeeded = False
+                    outcome.record_failure(str(e))
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
             for media_path, is_voice in non_image_media:
@@ -18703,15 +18682,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     _record_delivery(media_result)
                 except Exception as e:
-                    delivery_attempted = True
-                    delivery_succeeded = False
+                    outcome.record_failure(str(e))
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
         except Exception as e:
-            delivery_succeeded = False
+            outcome.record_failure(str(e))
             logger.warning("Post-stream media extraction failed: %s", e)
 
-        return delivery_attempted, delivery_attempted and delivery_succeeded
+        return outcome
 
 
 

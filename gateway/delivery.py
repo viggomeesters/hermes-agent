@@ -13,12 +13,77 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DeliveryOutcome:
+    """Cumulative result of all user-visible delivery attempts for one event."""
+
+    attempted_count: int = 0
+    succeeded_count: int = 0
+    failed_count: int = 0
+    message_ids: List[str] = field(default_factory=list)
+    last_error: Optional[str] = None
+    already_sent: bool = False
+
+    @property
+    def attempted(self) -> bool:
+        return self.attempted_count > 0
+
+    @property
+    def cleanup_succeeded(self) -> bool:
+        return self.attempted and self.failed_count == 0
+
+    def record_success(
+        self,
+        *,
+        message_id: Optional[str] = None,
+        already_sent: bool = False,
+    ) -> "DeliveryOutcome":
+        self.attempted_count += 1
+        self.succeeded_count += 1
+        self.already_sent = self.already_sent or already_sent
+        if message_id:
+            self.message_ids.append(str(message_id))
+        return self
+
+    def record_failure(self, error: Optional[str] = None) -> "DeliveryOutcome":
+        self.attempted_count += 1
+        self.failed_count += 1
+        if error:
+            self.last_error = str(error)
+        return self
+
+    def record_result(
+        self,
+        result: Any,
+        *,
+        already_sent: bool = False,
+    ) -> "DeliveryOutcome":
+        if result is None:
+            return self.record_failure("Delivery returned no result")
+        if bool(getattr(result, "success", False)):
+            return self.record_success(
+                message_id=getattr(result, "message_id", None),
+                already_sent=already_sent,
+            )
+        return self.record_failure(getattr(result, "error", None))
+
+    def merge(self, other: "DeliveryOutcome") -> "DeliveryOutcome":
+        self.attempted_count += other.attempted_count
+        self.succeeded_count += other.succeeded_count
+        self.failed_count += other.failed_count
+        self.message_ids.extend(other.message_ids)
+        if other.last_error:
+            self.last_error = other.last_error
+        self.already_sent = self.already_sent or other.already_sent
+        return self
 
 # Cap before gateway-level truncation of cron output for non-chunking platform
 # delivery.  Telegram's hard API limit is 4096; the headroom covers the "full
