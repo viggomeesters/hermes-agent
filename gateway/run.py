@@ -31117,6 +31117,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _operation_card_phase_event = asyncio.Event()
         _operation_card_update_lock = asyncio.Lock()
         _operation_card_last_edit: list[float] = [0.0]
+        _operation_card_last_semantic_key: list[Optional[str]] = [None]
         _operation_card_terminal: list[bool] = [False]
         try:
             _operation_card_phase_interval_raw = float(
@@ -31209,11 +31210,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             return render_operation_card(_operation_tracker.observe(snapshot))
 
+        def _operation_card_semantic_key(text: str) -> str:
+            """Ignore the liveness timestamp when coalescing phase-only edits."""
+            return "\n".join(
+                line for line in text.splitlines()
+                if not line.startswith("Bijgewerkt:")
+            )
+
         async def _send_operation_card_update(
             adapter,
             agent_ref,
             *,
             status: str = "running",
+            dedupe_unchanged: bool = False,
         ):
             while True:
                 delay = 0.0
@@ -31233,10 +31242,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if delay <= 0:
                         if status != "running":
                             _operation_card_terminal[0] = True
+                        card_text = _operation_card_text(agent_ref, status=status)
+                        semantic_key = _operation_card_semantic_key(card_text)
+                        if (
+                            dedupe_unchanged
+                            and status == "running"
+                            and previous_id
+                            and semantic_key == _operation_card_last_semantic_key[0]
+                        ):
+                            return None, previous_id
                         result, next_id = await _send_long_running_heartbeat_coro(
                             adapter,
                             source.chat_id,
-                            _operation_card_text(agent_ref, status=status),
+                            card_text,
                             _non_conversational_metadata(
                                 _status_thread_metadata,
                                 platform=source.platform,
@@ -31247,6 +31265,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if next_id:
                             _operation_card_message_id[0] = next_id
                             _operation_card_last_edit[0] = time.monotonic()
+                            _operation_card_last_semantic_key[0] = semantic_key
                             if (
                                 _cleanup_progress
                                 and next_id not in _cleanup_msg_ids
@@ -31384,6 +31403,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await _send_operation_card_update(
                         _phase_adapter,
                         _agent_ref,
+                        dedupe_unchanged=True,
                     )
                 except Exception as _phase_err:
                     logger.debug("Operation-card phase notification error: %s", _phase_err)
