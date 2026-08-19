@@ -1,0 +1,100 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "shareable_delivery": "auto",
+  "id": "TG-MEDIA-RESULT-CONTRACT",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Standardize multi-image delivery results across platform adapters",
+  "description": "First task. Migrate every send_multiple_images override to explicit aggregate SendResult semantics without changing platform delivery behavior.",
+  "scope": {
+    "read": [
+      "gateway/platforms/base.py",
+      "gateway/platforms/signal.py",
+      "plugins/platforms/discord/adapter.py",
+      "plugins/platforms/email/adapter.py",
+      "plugins/platforms/matrix/adapter.py",
+      "plugins/platforms/mattermost/adapter.py",
+      "plugins/platforms/slack/adapter.py",
+      "plugins/platforms/telegram/adapter.py"
+    ],
+    "modify": [
+      "gateway/platforms/base.py",
+      "gateway/platforms/signal.py",
+      "plugins/platforms/discord/adapter.py",
+      "plugins/platforms/email/adapter.py",
+      "plugins/platforms/matrix/adapter.py",
+      "plugins/platforms/mattermost/adapter.py",
+      "plugins/platforms/slack/adapter.py",
+      "tests/gateway/test_send_multiple_images_contract.py"
+    ]
+  },
+  "acceptance": [
+    "Every send_multiple_images override returns SendResult for success, empty input, disconnection, fallback, exception, and partial failure.",
+    "No platform-specific send behavior regresses."
+  ],
+  "verification": [
+    "HERMES_HOME=temp venv/bin/python -m pytest tests/gateway/test_send_multiple_images_contract.py tests/gateway/test_send_multiple_images.py tests/gateway/test_signal.py tests/gateway/test_slack.py -q -o 'addopts='"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-08-19T08:25:28+02:00"
+  },
+  "work_status": "completed",
+  "review_status": "approved",
+  "review_history": [
+    {
+      "created_at": "2026-08-19T08:58:00+02:00",
+      "agent": "hermes",
+      "status": "approved",
+      "evidence": "A: artifact-only critic deleg_48799489 found no blockers after all first-review findings were reproduced and fixed; acceptance 43 passed, focused 255 passed, repeats 10/10, static gates green.",
+      "transaction_id": "1013863fde254829bbeb1077d22955a5"
+    }
+  ],
+  "evidence": [
+    {
+      "schema": "go-workflow.finish-evidence.v1",
+      "created_at": "2026-08-19T08:57:41+02:00",
+      "task_id": "TG-MEDIA-RESULT-CONTRACT",
+      "agent": "hermes",
+      "summary": "changed_files=gateway/platforms/base.py,gateway/platforms/signal.py,plugins/platforms/discord/adapter.py,plugins/platforms/email/adapter.py,plugins/platforms/matrix/adapter.py,plugins/platforms/mattermost/adapter.py,plugins/platforms/slack/adapter.py,tests/gateway/test_send_multiple_images_contract.py; verification=43 acceptance tests passed rc=0, 255 focused tests passed rc=0, 10/10 repeats passed, Ruff compileall diff-check AST and go validate passed; critic=A no blockers deleg_48799489; broad_suite=4528 passed 5 order-dependent failures, exact failures isolated 5/5 passed",
+      "changed_files": [
+        "gateway/platforms/base.py",
+        "gateway/platforms/signal.py",
+        "plugins/platforms/discord/adapter.py",
+        "plugins/platforms/email/adapter.py",
+        "plugins/platforms/matrix/adapter.py",
+        "plugins/platforms/mattermost/adapter.py",
+        "plugins/platforms/slack/adapter.py",
+        "tests/gateway/test_send_multiple_images_contract.py"
+      ],
+      "no_diff": false,
+      "verification": {
+        "command": "43 acceptance tests passed rc=0, 255 focused tests passed rc=0, 10/10 repeats passed, Ruff compileall diff-check AST and go validate passed",
+        "result": "43 acceptance tests passed rc=0, 255 focused tests passed rc=0, 10/10 repeats passed, Ruff compileall diff-check AST and go validate passed"
+      },
+      "runtime": {
+        "agent": "hermes",
+        "runtime": null,
+        "model": null,
+        "billing_mode": "unknown"
+      },
+      "usage": {
+        "schema": "go-workflow.usage-attribution.v1",
+        "runtime_kind": "unknown",
+        "billing_mode": "unknown",
+        "owner": "hermes",
+        "model": null,
+        "token_estimate": null,
+        "api_equivalent_cost_usd": null,
+        "provider_invoice_cost_usd": null,
+        "cost_label": "api_equivalent_not_invoice_cost"
+      },
+      "review": {
+        "outcome": "A no blockers deleg_48799489",
+        "skip_reason": null
+      }
+    }
+  ]
+}

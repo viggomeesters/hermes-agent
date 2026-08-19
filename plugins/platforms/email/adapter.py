@@ -998,7 +998,7 @@ class EmailAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send a batch of images as a single email with multiple MIME attachments.
 
         Local files are attached directly. URL images have their URL
@@ -1007,12 +1007,14 @@ class EmailAdapter(BasePlatformAdapter):
         attachments fine, subject to SMTP message size limits.
         """
         if not images:
-            return
+            return SendResult(success=False, error="No images to send")
 
         from urllib.parse import unquote as _unquote
 
         body_parts: List[str] = []
         local_paths: List[str] = []
+        all_succeeded = True
+        last_error = None
         for image_url, alt_text in images:
             if alt_text:
                 body_parts.append(alt_text)
@@ -1022,27 +1024,34 @@ class EmailAdapter(BasePlatformAdapter):
                     local_paths.append(local_path)
                 else:
                     logger.warning("[Email] Skipping missing image: %s", local_path)
+                    all_succeeded = False
+                    last_error = f"Image file not found: {local_path}"
             else:
                 # Remote URLs just get linked in the body (parity with send_image)
                 body_parts.append(f"Image: {image_url}")
 
         if not local_paths and not body_parts:
-            return
+            return SendResult(success=False, error=last_error or "No deliverable images")
 
         body = "\n\n".join(body_parts)
 
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
+            message_id = await loop.run_in_executor(
                 None,
                 self._send_email_with_attachments,
                 chat_id,
                 body,
                 local_paths,
             )
+            return SendResult(
+                success=all_succeeded,
+                message_id=message_id,
+                error=last_error,
+            )
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
 
     def _send_email_with_attachments(
         self,
@@ -1083,7 +1092,7 @@ class EmailAdapter(BasePlatformAdapter):
                     part.add_header("Content-Disposition", f"attachment; filename={p.name}")
                     msg.attach(part)
             except Exception as e:
-                logger.warning("[Email] Failed to attach %s: %s", file_path, e)
+                raise RuntimeError(f"Failed to attach {file_path}: {e}") from e
 
         smtp = self._connect_smtp()
         try:

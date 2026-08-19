@@ -2311,6 +2311,42 @@ class SendResult:
     error_kind: Optional[str] = None
 
 
+def aggregate_send_results(
+    results: List[SendResult],
+    *,
+    all_inputs_accounted_for: bool = True,
+    missing_input_error: str = "One or more items were not deliverable",
+) -> SendResult:
+    """Collapse ordered send attempts into one fail-closed result."""
+    if not results:
+        return SendResult(success=False, error=missing_input_error)
+    all_succeeded = all(result.success for result in results)
+    last_message_id = next(
+        (
+            result.message_id
+            for result in reversed(results)
+            if result.success and result.message_id
+        ),
+        None,
+    )
+    last_error = next(
+        (result.error for result in reversed(results) if result.error),
+        None,
+    )
+    if not all_inputs_accounted_for and not last_error:
+        last_error = missing_input_error
+    metadata_source = next(
+        (result for result in reversed(results) if not result.success),
+        results[-1],
+    )
+    return dataclasses.replace(
+        metadata_source,
+        success=all_inputs_accounted_for and all_succeeded,
+        message_id=last_message_id,
+        error=last_error,
+    )
+
+
 # Machine-readable send-failure categories.  Kept platform-neutral so every
 # adapter can populate ``SendResult.error_kind`` from the same vocabulary and
 # the gateway can decide — once, in one place — whether a failure is worth

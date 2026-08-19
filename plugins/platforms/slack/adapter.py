@@ -48,6 +48,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    aggregate_send_results,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
     _TEXT_INJECT_EXTENSIONS,
@@ -3217,7 +3218,7 @@ class SlackAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send a batch of images as a single Slack message with multiple file uploads.
 
         Uses ``files_upload_v2`` with its ``file_uploads`` parameter so all
@@ -3227,16 +3228,16 @@ class SlackAdapter(BasePlatformAdapter):
 
         The batch limit is 10 file uploads per call (Slack server-side cap).
         """
+        if not images:
+            return SendResult(success=False, error="No images to send")
         if self._is_ignored_channel(chat_id):
             logger.warning(
                 "[Slack] Suppressed multi-image upload in configured ignored channel %s",
                 chat_id,
             )
-            return
+            return SendResult(success=False, error="Channel is ignored")
         if not self._app:
-            return
-        if not images:
-            return
+            return SendResult(success=False, error="Not connected")
 
         chat_id = await self._ensure_dm_conversation(
             chat_id, team_id=self._metadata_team_id(metadata)
@@ -3249,13 +3250,16 @@ class SlackAdapter(BasePlatformAdapter):
                 is_safe_url as _is_safe_url,
             )
         except Exception:
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(
+                chat_id, images, metadata, human_delay
+            )
 
         thread_ts = self._resolve_thread_ts(None, metadata)
 
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
+        results: List[SendResult] = []
+        all_inputs_accounted_for = True
 
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
@@ -3318,7 +3322,13 @@ class SlackAdapter(BasePlatformAdapter):
                                 continue
 
                 if not file_uploads:
+                    all_inputs_accounted_for = False
+                    results.append(
+                        SendResult(success=False, error="No deliverable images in chunk")
+                    )
                     continue
+                if len(file_uploads) != len(chunk):
+                    all_inputs_accounted_for = False
 
                 initial_comment = (
                     "\n".join(initial_comment_parts) if initial_comment_parts else ""
@@ -3338,7 +3348,13 @@ class SlackAdapter(BasePlatformAdapter):
                     thread_ts=thread_ts,
                 )
                 self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
-                _ = result
+                try:
+                    getter = getattr(result, "get", None)
+                    timestamp = getter("ts") if callable(getter) else result["ts"]
+                except (KeyError, TypeError, AttributeError):
+                    timestamp = None
+                message_id = str(timestamp or "") or None
+                results.append(SendResult(success=True, message_id=message_id))
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
@@ -3347,9 +3363,19 @@ class SlackAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
-                await super().send_multiple_images(
-                    chat_id, chunk, metadata, human_delay=human_delay
+                results.append(
+                    await super().send_multiple_images(
+                        chat_id,
+                        chunk,
+                        metadata,
+                        human_delay=human_delay,
+                    )
                 )
+
+        return aggregate_send_results(
+            results,
+            all_inputs_accounted_for=all_inputs_accounted_for,
+        )
 
     def _record_uploaded_file_thread(
         self,

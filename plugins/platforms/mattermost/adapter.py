@@ -28,6 +28,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    aggregate_send_results,
 )
 
 logger = logging.getLogger(__name__)
@@ -616,7 +617,7 @@ class MattermostAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send a batch of images as a single Mattermost post with multiple attachments.
 
         Mattermost supports up to 5 ``file_ids`` per post. Each image is
@@ -626,7 +627,7 @@ class MattermostAdapter(BasePlatformAdapter):
         base per-image loop on total failure.
         """
         if not images:
-            return
+            return SendResult(success=False, error="No images to send")
 
         import mimetypes
         import aiohttp
@@ -634,6 +635,8 @@ class MattermostAdapter(BasePlatformAdapter):
 
         CHUNK = 5  # Mattermost post file_ids cap
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+        results: List[SendResult] = []
+        all_inputs_accounted_for = True
 
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
@@ -682,7 +685,13 @@ class MattermostAdapter(BasePlatformAdapter):
                         file_ids.append(fid)
 
                 if not file_ids:
+                    all_inputs_accounted_for = False
+                    results.append(
+                        SendResult(success=False, error="No deliverable images in chunk")
+                    )
                     continue
+                if len(file_ids) != len(chunk):
+                    all_inputs_accounted_for = False
 
                 payload: Dict[str, Any] = _with_mentions_disabled({
                     "channel_id": chat_id,
@@ -699,13 +708,34 @@ class MattermostAdapter(BasePlatformAdapter):
                 data = await self._post_preserving_thread(chat_id, payload, metadata)
                 if not data or "id" not in data:
                     logger.warning("Mattermost: multi-image post failed, falling back")
-                    await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                    results.append(
+                        await super().send_multiple_images(
+                            chat_id,
+                            chunk,
+                            metadata,
+                            human_delay=human_delay,
+                        )
+                    )
+                else:
+                    results.append(SendResult(success=True, message_id=data["id"]))
             except Exception as e:
                 logger.warning(
                     "Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
                     chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                results.append(
+                    await super().send_multiple_images(
+                        chat_id,
+                        chunk,
+                        metadata,
+                        human_delay=human_delay,
+                    )
+                )
+
+        return aggregate_send_results(
+            results,
+            all_inputs_accounted_for=all_inputs_accounted_for,
+        )
 
     # ------------------------------------------------------------------
     # WebSocket
