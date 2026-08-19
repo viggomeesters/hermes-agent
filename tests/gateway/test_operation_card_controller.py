@@ -164,3 +164,35 @@ async def test_controller_emits_bounded_structured_lifecycle_events(caplog):
     assert {record.operation_card_context for record in records} == {"ctx-123"}
     assert all(record.getMessage() == "operation_card_lifecycle" for record in records)
     assert all("phase one" not in record.getMessage() for record in records)
+
+
+@pytest.mark.asyncio
+async def test_fallback_send_with_new_id_is_created_and_keeps_all_card_ids(caplog):
+    caplog.set_level(logging.INFO, logger="gateway.operation_card_controller")
+    responses = [
+        (SendResult(success=True, message_id="card-1"), "card-1"),
+        (SendResult(success=True, message_id="card-2"), "card-2"),
+    ]
+    cleanup_ids = []
+
+    async def send(previous_id, text):
+        return responses.pop(0)
+
+    controller = OperationCardController(
+        enabled=True,
+        phase_interval=0,
+        cleanup_enabled=True,
+        cleanup_message_ids=cleanup_ids,
+        context_id="ctx-fallback",
+    )
+    await controller.update(render=lambda: "phase one", send=send)
+    await controller.update(render=lambda: "phase two", send=send)
+
+    events = [
+        record.operation_card_event
+        for record in caplog.records
+        if getattr(record, "operation_card_context", None) == "ctx-fallback"
+    ]
+    assert events == ["created", "created"]
+    assert controller.card_message_ids == ["card-1", "card-2"]
+    assert cleanup_ids == ["card-1", "card-2"]

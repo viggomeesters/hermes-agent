@@ -5674,6 +5674,29 @@ class BasePlatformAdapter(ABC):
                                 "Post-delivery callback failed", exc_info=True
                             )
 
+                _failure_hooks = [
+                    hook
+                    for hook in (
+                        getattr(_prev, "_hermes_on_delivery_failed", None),
+                        getattr(_new, "_hermes_on_delivery_failed", None),
+                    )
+                    if callable(hook)
+                ]
+                if _failure_hooks:
+                    async def _chained_failure() -> None:
+                        for _hook in _failure_hooks:
+                            try:
+                                _result = _hook()
+                                if inspect.isawaitable(_result):
+                                    await _result
+                            except Exception:
+                                logger.debug(
+                                    "Post-delivery failure callback failed",
+                                    exc_info=True,
+                                )
+
+                    _chained._hermes_on_delivery_failed = _chained_failure
+
                 callback = _chained
 
         if generation is None:
@@ -7459,18 +7482,22 @@ class BasePlatformAdapter(ABC):
                     "_post_successful_delivery_callbacks",
                     {},
                 ).pop(session_key, None)
-            if (
-                callable(_post_success_cb)
-                and not delivery_outcome.cleanup_succeeded
-            ):
-                logger.info(
-                    "operation_card_lifecycle",
-                    extra={
-                        "operation_card_event": "retained",
-                        "operation_card_reason": "final_delivery_failed",
-                        "operation_card_success_only": True,
-                    },
+            if callable(_post_success_cb) and not delivery_outcome.cleanup_succeeded:
+                _delivery_failed_cb = getattr(
+                    _post_success_cb,
+                    "_hermes_on_delivery_failed",
+                    None,
                 )
+                if callable(_delivery_failed_cb):
+                    try:
+                        _failed_result = _delivery_failed_cb()
+                        if inspect.isawaitable(_failed_result):
+                            await asyncio.wait_for(
+                                _failed_result,
+                                timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                            )
+                    except (asyncio.TimeoutError, Exception):
+                        pass
             for _post_callback, _should_fire in (
                 (_post_cb, True),
                 (

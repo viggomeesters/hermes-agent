@@ -102,6 +102,24 @@ class CleanupCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class FallbackPartialDeleteAdapter(CleanupCaptureAdapter):
+    """Force one edit fallback and leave the original card undeleted."""
+
+    def __init__(self):
+        super().__init__()
+        self._failed_edit = False
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        if not self._failed_edit:
+            self._failed_edit = True
+            return SendResult(success=False, message_id=message_id, error="edit failed")
+        return await super().edit_message(chat_id, message_id, content)
+
+    async def delete_message(self, chat_id, message_id) -> bool:
+        self.deleted.append({"chat_id": chat_id, "message_id": str(message_id)})
+        return str(message_id) != str(self.sent[0]["message_id"])
+
+
 class NoDeleteAdapter(CleanupCaptureAdapter):
     """Adapter that inherits the base no-op delete_message (used to prove
     the cleanup path skips adapters without deletion support)."""
@@ -447,6 +465,59 @@ async def test_operation_card_tracks_phase_changes_and_is_removed_after_final_de
         == "final_delivery_succeeded"
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_fallback_card_logs_retained_when_any_card_delete_fails(
+    monkeypatch, tmp_path, caplog
+):
+    caplog.set_level(logging.INFO, logger="gateway.operation_card_controller")
+    adapter = FallbackPartialDeleteAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        SlowOperationCardAgent,
+        cleanup_on=True,
+        platform_display={
+            "operation_cards": True,
+            "long_running_notifications": True,
+            "operation_card_phase_update_interval": 0.01,
+            "tool_progress": False,
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_FIRST_NOTIFY_DELAY", "0.06")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "1")
+
+    session_key = "agent:main:telegram:group:-1006"
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1006"),
+        session_id="sess-fallback-retained",
+        session_key=session_key,
+    )
+    assert result["final_response"] == "done"
+    assert len(adapter.sent) >= 2
+
+    cb = adapter.pop_post_delivery_callback(session_key, success_only=True)
+    assert callable(cb)
+    await _fire_post_delivery_cb(cb)
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        if len(adapter.deleted) >= 2:
+            break
+
+    events = [
+        (
+            getattr(record, "operation_card_event", None),
+            getattr(record, "operation_card_reason", None),
+        )
+        for record in caplog.records
+    ]
+    assert ("retained", "delete_failed") in events
+    assert ("removed", "final_delivery_succeeded") not in events
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,7 @@ class OperationCardController:
         self.sleep = sleep
 
         self.message_id: Optional[str] = None
+        self.card_message_ids: list[str] = []
         self.phase: Optional[str] = None
         self.phase_event = asyncio.Event()
         self.update_lock = asyncio.Lock()
@@ -131,6 +132,8 @@ class OperationCardController:
                     result, next_id = await send(previous_id, card_text)
                     if next_id and bool(getattr(result, "success", False)):
                         self.message_id = str(next_id)
+                        if self.message_id not in self.card_message_ids:
+                            self.card_message_ids.append(self.message_id)
                         self.last_edit = self.monotonic()
                         self.last_semantic_key = semantic_key
                         if (
@@ -139,7 +142,9 @@ class OperationCardController:
                         ):
                             self.cleanup_message_ids.append(self.message_id)
                         self._emit(
-                            "edited" if previous_id else "created",
+                            "edited"
+                            if previous_id and str(next_id) == str(previous_id)
+                            else "created",
                             reason="transport_success",
                             status=status,
                         )

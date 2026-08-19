@@ -32384,23 +32384,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _chat_id_snapshot = source.chat_id
             _adapter_snapshot = _cleanup_adapter
             _loop_snapshot = asyncio.get_running_loop()
-            _card_id_snapshot = _operation_card_controller.message_id
+            _card_ids_snapshot = list(_operation_card_controller.card_message_ids)
 
             def _cleanup_temp_bubbles() -> None:
                 async def _delete_all() -> None:
-                    _card_delete_succeeded: bool | None = None
+                    _delete_results: dict[str, bool] = {}
                     for _mid in _ids_snapshot:
                         try:
                             _deleted = await _adapter_snapshot.delete_message(
                                 _chat_id_snapshot, _mid
                             )
-                            if _mid == _card_id_snapshot:
-                                _card_delete_succeeded = bool(_deleted)
+                            _delete_results[str(_mid)] = bool(_deleted)
                         except Exception:
-                            if _mid == _card_id_snapshot:
-                                _card_delete_succeeded = False
-                    if _card_id_snapshot:
-                        if _card_delete_succeeded:
+                            _delete_results[str(_mid)] = False
+                    if _card_ids_snapshot:
+                        if all(
+                            _delete_results.get(str(_card_id), False)
+                            for _card_id in _card_ids_snapshot
+                        ):
                             _operation_card_controller.record_removed(
                                 "final_delivery_succeeded"
                             )
@@ -32416,6 +32417,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 except Exception:
                     pass
+
+            def _record_failed_final_delivery() -> None:
+                _operation_card_controller.record_retained(
+                    "final_delivery_failed"
+                )
+
+            _cleanup_temp_bubbles._hermes_on_delivery_failed = (
+                _record_failed_final_delivery
+            )
 
             try:
                 # The success-only registry is implemented and owned by the
