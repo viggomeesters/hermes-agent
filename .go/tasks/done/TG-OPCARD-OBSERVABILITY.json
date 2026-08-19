@@ -1,0 +1,90 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "shareable_delivery": "auto",
+  "id": "TG-OPCARD-OBSERVABILITY",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Add local structured operation-card lifecycle events",
+  "description": "Fifth task after controller extraction. Emit local structured events for created, edited, coalesced, retained, removed, and generation-mismatch outcomes without external telemetry or extra Telegram bubbles.",
+  "scope": {
+    "read": [
+      "gateway/operation_card_controller.py",
+      "gateway/run.py"
+    ],
+    "modify": [
+      "gateway/operation_card_controller.py",
+      "gateway/platforms/base.py",
+      "gateway/run.py",
+      "tests/gateway/test_operation_card_controller.py",
+      "tests/gateway/test_run_cleanup_progress.py",
+      "tests/gateway/test_ephemeral_reply.py"
+    ]
+  },
+  "acceptance": [
+    "Each lifecycle transition emits a bounded local structured event with chat/session-safe identifiers and reason.",
+    "No outbound telemetry, PII leakage, or extra user-visible messages are introduced."
+  ],
+  "verification": [
+    "HERMES_HOME=temp venv/bin/python -m pytest tests/gateway/test_operation_card_controller.py tests/gateway/test_run_cleanup_progress.py -q -o 'addopts='"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-08-19T09:34:24+02:00"
+  },
+  "work_status": "completed",
+  "review_status": "approved",
+  "review_history": [
+    {
+      "created_at": "2026-08-19T09:41:25+02:00",
+      "agent": "hermes",
+      "status": "approved",
+      "evidence": "A: deleg_4e04fce0 no blockers; structured bounded local fields; no outbound telemetry or content/PII in messages.",
+      "transaction_id": "7eba835321ec4cab94bc878bdb758288"
+    }
+  ],
+  "evidence": [
+    {
+      "schema": "go-workflow.finish-evidence.v1",
+      "created_at": "2026-08-19T09:41:24+02:00",
+      "task_id": "TG-OPCARD-OBSERVABILITY",
+      "agent": "hermes",
+      "summary": "changed_files=gateway/operation_card_controller.py,gateway/platforms/base.py,gateway/run.py,tests/gateway/test_operation_card_controller.py,tests/gateway/test_run_cleanup_progress.py,tests/gateway/test_ephemeral_reply.py;verification_command=pytest observability and cross-task suites plus ruff compileall diff-check go validate;verification_result=26 acceptance passed plus 68 cross-task passed plus 10/10 repeats;critic=deleg_4e04fce0 A no blockers;artifact_sha256=09880ff3f3d455a316338b38d30dce64b21b7d9e53d9e0513e3baf23ea8842f5",
+      "changed_files": [
+        "gateway/operation_card_controller.py",
+        "gateway/platforms/base.py",
+        "gateway/run.py",
+        "tests/gateway/test_operation_card_controller.py",
+        "tests/gateway/test_run_cleanup_progress.py",
+        "tests/gateway/test_ephemeral_reply.py"
+      ],
+      "no_diff": false,
+      "verification": {
+        "command": "pytest observability and cross-task suites plus ruff compileall diff-check go validate",
+        "result": "26 acceptance passed plus 68 cross-task passed plus 10/10 repeats"
+      },
+      "runtime": {
+        "agent": "hermes",
+        "runtime": null,
+        "model": null,
+        "billing_mode": "unknown"
+      },
+      "usage": {
+        "schema": "go-workflow.usage-attribution.v1",
+        "runtime_kind": "unknown",
+        "billing_mode": "unknown",
+        "owner": "hermes",
+        "model": null,
+        "token_estimate": null,
+        "api_equivalent_cost_usd": null,
+        "provider_invoice_cost_usd": null,
+        "cost_label": "api_equivalent_not_invoice_cost"
+      },
+      "review": {
+        "outcome": "deleg_4e04fce0 A no blockers",
+        "skip_reason": null
+      }
+    }
+  ]
+}

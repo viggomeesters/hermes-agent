@@ -5639,6 +5639,16 @@ class BasePlatformAdapter(ABC):
                 and generation is not None
                 and int(generation) < int(existing_gen)
             ):
+                logger.info(
+                    "operation_card_lifecycle",
+                    extra={
+                        "operation_card_event": "generation_mismatch",
+                        "operation_card_reason": "stale_registration",
+                        "operation_card_expected_generation": int(existing_gen),
+                        "operation_card_actual_generation": int(generation),
+                        "operation_card_success_only": bool(success_only),
+                    },
+                )
                 return
             # Same-or-newer generation: chain with the existing callback so
             # both fire in registration order.
@@ -5692,10 +5702,30 @@ class BasePlatformAdapter(ABC):
         if isinstance(entry, tuple) and len(entry) == 2:
             entry_generation, callback = entry
             if generation is not None and int(entry_generation) != int(generation):
+                logger.info(
+                    "operation_card_lifecycle",
+                    extra={
+                        "operation_card_event": "generation_mismatch",
+                        "operation_card_reason": "pop_generation_mismatch",
+                        "operation_card_expected_generation": int(entry_generation),
+                        "operation_card_actual_generation": int(generation),
+                        "operation_card_success_only": bool(success_only),
+                    },
+                )
                 return None
             registry.pop(session_key, None)
             return callback if callable(callback) else None
         if generation is not None:
+            logger.info(
+                "operation_card_lifecycle",
+                extra={
+                    "operation_card_event": "generation_mismatch",
+                    "operation_card_reason": "legacy_entry_has_no_generation",
+                    "operation_card_expected_generation": None,
+                    "operation_card_actual_generation": int(generation),
+                    "operation_card_success_only": bool(success_only),
+                },
+            )
             return None
         registry.pop(session_key, None)
         return entry if callable(entry) else None
@@ -7429,6 +7459,18 @@ class BasePlatformAdapter(ABC):
                     "_post_successful_delivery_callbacks",
                     {},
                 ).pop(session_key, None)
+            if (
+                callable(_post_success_cb)
+                and not delivery_outcome.cleanup_succeeded
+            ):
+                logger.info(
+                    "operation_card_lifecycle",
+                    extra={
+                        "operation_card_event": "retained",
+                        "operation_card_reason": "final_delivery_failed",
+                        "operation_card_success_only": True,
+                    },
+                )
             for _post_callback, _should_fire in (
                 (_post_cb, True),
                 (

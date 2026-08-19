@@ -21,6 +21,7 @@ Covered:
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest

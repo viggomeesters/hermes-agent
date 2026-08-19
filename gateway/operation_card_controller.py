@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Optional
@@ -9,6 +10,7 @@ from typing import Any, Optional
 
 RenderCard = Callable[[], str]
 SendCard = Callable[[Optional[str], str], Awaitable[tuple[Any, Optional[str]]]]
+logger = logging.getLogger(__name__)
 
 
 class OperationCardController:
@@ -21,6 +23,7 @@ class OperationCardController:
         phase_interval: float,
         cleanup_enabled: bool = False,
         cleanup_message_ids: Optional[list[str]] = None,
+        context_id: str = "",
         loop: Optional[asyncio.AbstractEventLoop] = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -31,6 +34,7 @@ class OperationCardController:
         self.cleanup_message_ids = (
             cleanup_message_ids if cleanup_message_ids is not None else []
         )
+        self.context_id = str(context_id or "")[:64]
         self.loop = loop
         self.monotonic = monotonic
         self.sleep = sleep
@@ -42,6 +46,30 @@ class OperationCardController:
         self.last_edit = 0.0
         self.last_semantic_key: Optional[str] = None
         self.terminal = False
+
+    def _emit(
+        self,
+        event: str,
+        *,
+        reason: str = "",
+        status: str = "",
+    ) -> None:
+        logger.info(
+            "operation_card_lifecycle",
+            extra={
+                "operation_card_event": str(event)[:32],
+                "operation_card_context": self.context_id,
+                "operation_card_reason": str(reason or "")[:64],
+                "operation_card_status": str(status or "")[:32],
+                "operation_card_has_message_id": bool(self.message_id),
+            },
+        )
+
+    def record_retained(self, reason: str) -> None:
+        self._emit("retained", reason=reason)
+
+    def record_removed(self, reason: str) -> None:
+        self._emit("removed", reason=reason)
 
     @staticmethod
     def semantic_key(text: str) -> str:
@@ -93,6 +121,11 @@ class OperationCardController:
                         and previous_id
                         and semantic_key == self.last_semantic_key
                     ):
+                        self._emit(
+                            "coalesced",
+                            reason="semantic_state_unchanged",
+                            status=status,
+                        )
                         return None, previous_id
 
                     result, next_id = await send(previous_id, card_text)
@@ -105,6 +138,11 @@ class OperationCardController:
                             and self.message_id not in self.cleanup_message_ids
                         ):
                             self.cleanup_message_ids.append(self.message_id)
+                        self._emit(
+                            "edited" if previous_id else "created",
+                            reason="transport_success",
+                            status=status,
+                        )
                     return result, next_id
 
             await self.sleep(delay)

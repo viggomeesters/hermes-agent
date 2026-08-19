@@ -28,6 +28,7 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import faulthandler
+import hashlib
 import math
 import inspect
 import json
@@ -31147,6 +31148,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             phase_interval=_operation_card_phase_interval,
             cleanup_enabled=_cleanup_progress,
             cleanup_message_ids=_cleanup_msg_ids,
+            context_id=hashlib.sha256(
+                f"{session_key}|{run_generation}".encode("utf-8", errors="replace")
+            ).hexdigest()[:16],
             loop=_operation_card_loop,
         )
 
@@ -32380,16 +32384,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _chat_id_snapshot = source.chat_id
             _adapter_snapshot = _cleanup_adapter
             _loop_snapshot = asyncio.get_running_loop()
+            _card_id_snapshot = _operation_card_controller.message_id
 
             def _cleanup_temp_bubbles() -> None:
                 async def _delete_all() -> None:
+                    _card_delete_succeeded: bool | None = None
                     for _mid in _ids_snapshot:
                         try:
-                            await _adapter_snapshot.delete_message(
+                            _deleted = await _adapter_snapshot.delete_message(
                                 _chat_id_snapshot, _mid
                             )
+                            if _mid == _card_id_snapshot:
+                                _card_delete_succeeded = bool(_deleted)
                         except Exception:
-                            pass
+                            if _mid == _card_id_snapshot:
+                                _card_delete_succeeded = False
+                    if _card_id_snapshot:
+                        if _card_delete_succeeded:
+                            _operation_card_controller.record_removed(
+                                "final_delivery_succeeded"
+                            )
+                        else:
+                            _operation_card_controller.record_retained(
+                                "delete_failed"
+                            )
                 try:
                     safe_schedule_threadsafe(
                         _delete_all(), _loop_snapshot,
@@ -32411,7 +32429,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     success_only=True,
                 )
             except Exception as _rpe:
+                _operation_card_controller.record_retained(
+                    "cleanup_registration_failed"
+                )
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+        elif (
+            _cleanup_progress
+            and _operation_cards_enabled
+            and _operation_card_controller.message_id
+            and isinstance(response, dict)
+            and response.get("failed")
+        ):
+            _operation_card_controller.record_retained("agent_run_failed")
 
         return response
 
