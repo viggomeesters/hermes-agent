@@ -4,3 +4,4 @@
 {"schema": "go-workflow.repo-local.event.v1", "kind": "event", "event": "task.claimed", "created_at": "2026-08-19T09:15:45+02:00", "task_id": "TG-OPCARD-COALESCE", "agent": "hermes", "data": {"report_only_dirty": []}}
 {"schema": "go-workflow.repo-local.event.v1", "kind": "event", "event": "task.claimed", "created_at": "2026-08-19T09:26:44+02:00", "task_id": "TG-OPCARD-CONTROLLER", "agent": "hermes", "data": {"report_only_dirty": []}}
 {"schema": "go-workflow.repo-local.event.v1", "kind": "event", "event": "task.claimed", "created_at": "2026-08-19T09:34:24+02:00", "task_id": "TG-OPCARD-OBSERVABILITY", "agent": "hermes", "data": {"report_only_dirty": []}}
+{"schema": "go-workflow.repo-local.event.v1", "kind": "event", "event": "task.claimed", "created_at": "2026-08-19T09:41:41+02:00", "task_id": "TG-OPCARD-LIVE-PROOF", "agent": "hermes", "data": {"report_only_dirty": []}}

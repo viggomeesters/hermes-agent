@@ -265,7 +265,8 @@ async def test_streamed_explicit_media_resend_is_delivered(tmp_path, monkeypatch
         adapter,
     )
 
-    assert delivery == (True, True)
+    assert delivery.attempted is True
+    assert delivery.cleanup_succeeded is True
     adapter.send_multiple_images.assert_awaited_once()
     sent_paths = [p for p, _cap in adapter.send_multiple_images.await_args.kwargs["images"]]
     assert str(img) in sent_paths[0]
@@ -291,7 +292,8 @@ async def test_streamed_explicit_media_failure_is_reported(tmp_path, monkeypatch
         adapter,
     )
 
-    assert delivery == (True, False)
+    assert delivery.attempted is True
+    assert delivery.cleanup_succeeded is False
     adapter.send_document.assert_awaited_once()
 
 
@@ -310,7 +312,8 @@ async def test_streamed_media_syntax_prose_is_not_a_delivery_attempt():
         adapter,
     )
 
-    assert delivery == (False, False)
+    assert delivery.attempted is False
+    assert delivery.cleanup_succeeded is False
     adapter.send_multiple_images.assert_not_awaited()
     adapter.send_document.assert_not_awaited()
 

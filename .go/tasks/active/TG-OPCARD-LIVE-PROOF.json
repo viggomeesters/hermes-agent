@@ -5,7 +5,7 @@
   "shareable_delivery": "auto",
   "id": "TG-OPCARD-LIVE-PROOF",
   "project": "hermes-agent",
-  "status": "open",
+  "status": "active",
   "summary": "Idle-deploy operation-card improvements and capture live Telegram proof",
   "description": "Final task after all code tasks. Reconcile branch/runtime, schedule one singleton idle reload, prove loaded commit and runtime health, then capture real Telegram 10/15/180 and cleanup behavior where safely observable.",
   "scope": {
@@ -16,7 +16,8 @@
       "/home/viggo/.hermes/config.yaml"
     ],
     "modify": [
-      "tests/runtime/test_operation_card_live_probe.py"
+      "tests/runtime/test_operation_card_live_probe.py",
+      "tests/gateway/test_73771_media_resend_dedup.py"
     ]
   },
   "acceptance": [
@@ -28,10 +29,10 @@
     "venv/bin/python -m pytest tests/runtime/test_operation_card_live_probe.py -q -o 'addopts='"
   ],
   "claim": {
-    "agent": null,
-    "claimed_at": null
+    "agent": "hermes",
+    "claimed_at": "2026-08-19T09:41:41+02:00"
   },
-  "work_status": "pending",
+  "work_status": "in_progress",
   "review_status": "none",
   "review_history": [],
   "evidence": []
