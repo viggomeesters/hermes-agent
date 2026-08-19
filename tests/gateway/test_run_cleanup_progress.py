@@ -213,6 +213,22 @@ class RacingOperationCardAgent(SlowOperationCardAgent):
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class CoalescingOperationCardAgent(SlowOperationCardAgent):
+    """Emit two phases while the first edit is waiting on the rate limit."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.07)
+        self.current_tool = "read_file"
+        if self.tool_progress_callback is not None:
+            self.tool_progress_callback("tool.started", "read_file", "config.yaml", {})
+        time.sleep(0.005)
+        self.current_tool = "patch"
+        if self.tool_progress_callback is not None:
+            self.tool_progress_callback("tool.started", "patch", "gateway/run.py", {})
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -509,3 +525,41 @@ async def test_phase_and_heartbeat_edits_share_one_rate_limit(monkeypatch, tmp_p
     ]
     assert len(gaps) >= 2, running_updates
     assert min(gaps) >= 0.07, gaps
+
+
+@pytest.mark.asyncio
+async def test_rapid_phase_events_coalesce_identical_rendered_edit(monkeypatch, tmp_path):
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        CoalescingOperationCardAgent,
+        cleanup_on=True,
+        platform_display={
+            "operation_cards": True,
+            "long_running_notifications": True,
+            "operation_card_phase_update_interval": 0.08,
+            "tool_progress": False,
+        },
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_FIRST_NOTIFY_DELAY", "0.06")
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "1")
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+
+    await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="-1004"),
+        session_id="sess-coalesce",
+        session_key="agent:main:telegram:group:-1004",
+    )
+
+    patch_running_edits = [
+        edit
+        for edit in adapter.edits
+        if "Status: 🟢 actief" in edit["content"]
+        and "Fase: patch" in edit["content"]
+    ]
+    assert len(patch_running_edits) == 1, adapter.edits
