@@ -1,0 +1,36 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "shareable_delivery": "auto",
+  "id": "TG-OPCARD-OBSERVABILITY",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Add local structured operation-card lifecycle events",
+  "description": "Fifth task after controller extraction. Emit local structured events for created, edited, coalesced, retained, removed, and generation-mismatch outcomes without external telemetry or extra Telegram bubbles.",
+  "scope": {
+    "read": [
+      "gateway/operation_card_controller.py",
+      "gateway/run.py"
+    ],
+    "modify": [
+      "gateway/operation_card_controller.py",
+      "tests/gateway/test_operation_card_controller.py"
+    ]
+  },
+  "acceptance": [
+    "Each lifecycle transition emits a bounded local structured event with chat/session-safe identifiers and reason.",
+    "No outbound telemetry, PII leakage, or extra user-visible messages are introduced."
+  ],
+  "verification": [
+    "HERMES_HOME=temp venv/bin/python -m pytest tests/gateway/test_operation_card_controller.py tests/gateway/test_run_cleanup_progress.py -q -o 'addopts='"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "work_status": "pending",
+  "review_status": "none",
+  "review_history": [],
+  "evidence": []
+}

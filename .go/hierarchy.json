@@ -16,6 +16,20 @@
         }
       ],
       "tasks": []
+    },
+    {
+      "id": "operation-card-hardening",
+      "title": "Operation-card hardening",
+      "description": "Cross-platform delivery accounting, deduplicated lifecycle control, local observability, and safe Telegram runtime proof.",
+      "features": [],
+      "tasks": [
+        "TG-MEDIA-RESULT-CONTRACT",
+        "TG-DELIVERY-OUTCOME",
+        "TG-OPCARD-COALESCE",
+        "TG-OPCARD-CONTROLLER",
+        "TG-OPCARD-OBSERVABILITY",
+        "TG-OPCARD-LIVE-PROOF"
+      ]
     }
   ]
 }

@@ -1,0 +1,38 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "shareable_delivery": "auto",
+  "id": "TG-OPCARD-LIVE-PROOF",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Idle-deploy operation-card improvements and capture live Telegram proof",
+  "description": "Final task after all code tasks. Reconcile branch/runtime, schedule one singleton idle reload, prove loaded commit and runtime health, then capture real Telegram 10/15/180 and cleanup behavior where safely observable.",
+  "scope": {
+    "read": [
+      ".go",
+      "gateway/run.py",
+      "gateway/operation_card_controller.py",
+      "/home/viggo/.hermes/config.yaml"
+    ],
+    "modify": [
+      "tests/runtime/test_operation_card_live_probe.py"
+    ]
+  },
+  "acceptance": [
+    "Gateway reload occurs only after active_agents=0 quiet window through one external singleton watcher.",
+    "New PID and loaded commit are proven; Telegram reconnect and channel health are proven.",
+    "Runtime evidence proves one card, delayed creation, rate-limited edits, and success cleanup; destructive delivery-failure injection is replaced by a safe adapter/runtime probe when live failure cannot be induced safely."
+  ],
+  "verification": [
+    "venv/bin/python -m pytest tests/runtime/test_operation_card_live_probe.py -q -o 'addopts='"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "work_status": "pending",
+  "review_status": "none",
+  "review_history": [],
+  "evidence": []
+}

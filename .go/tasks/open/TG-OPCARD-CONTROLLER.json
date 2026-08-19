@@ -1,0 +1,40 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "shareable_delivery": "auto",
+  "id": "TG-OPCARD-CONTROLLER",
+  "project": "hermes-agent",
+  "status": "open",
+  "summary": "Extract operation-card lifecycle controller from gateway runner",
+  "description": "Fourth task after coalescing. Move creation, coalescing, rate limiting, heartbeat, terminal state, and cleanup coordination behind one focused controller while preserving behavior.",
+  "scope": {
+    "read": [
+      "gateway/run.py",
+      "gateway/operation_card.py",
+      "gateway/turn_context.py"
+    ],
+    "modify": [
+      "gateway/operation_card_controller.py",
+      "gateway/run.py",
+      "gateway/turn_context.py",
+      "tests/gateway/test_operation_card_controller.py",
+      "tests/gateway/test_run_cleanup_progress.py"
+    ]
+  },
+  "acceptance": [
+    "GatewayRunner delegates operation-card lifecycle to one controller with no duplicate authority.",
+    "Existing 10/15/180 behavior and success-only cleanup remain unchanged."
+  ],
+  "verification": [
+    "HERMES_HOME=temp venv/bin/python -m pytest tests/gateway/test_operation_card_controller.py tests/gateway/test_run_cleanup_progress.py tests/gateway/test_operation_card.py -q -o 'addopts='"
+  ],
+  "claim": {
+    "agent": null,
+    "claimed_at": null
+  },
+  "work_status": "pending",
+  "review_status": "none",
+  "review_history": [],
+  "evidence": []
+}
