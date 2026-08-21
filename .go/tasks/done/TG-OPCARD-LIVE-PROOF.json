@@ -1,0 +1,91 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "mechanical",
+  "shareable_delivery": "auto",
+  "id": "TG-OPCARD-LIVE-PROOF",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Idle-deploy operation-card improvements and capture live Telegram proof",
+  "description": "Final task after all code tasks. Reconcile branch/runtime, schedule one singleton idle reload, prove loaded commit and runtime health, then capture real Telegram 10/15/180 and cleanup behavior where safely observable.",
+  "scope": {
+    "read": [
+      ".go",
+      "gateway/run.py",
+      "gateway/operation_card_controller.py",
+      "/home/viggo/.hermes/config.yaml"
+    ],
+    "modify": [
+      "tests/runtime/test_operation_card_live_probe.py",
+      "tests/gateway/test_73771_media_resend_dedup.py",
+      "gateway/operation_card_controller.py",
+      "gateway/platforms/base.py",
+      "gateway/run.py",
+      "tests/gateway/test_operation_card_controller.py",
+      "tests/gateway/test_run_cleanup_progress.py",
+      "tests/gateway/test_ephemeral_reply.py"
+    ]
+  },
+  "acceptance": [
+    "Gateway reload occurs only after active_agents=0 quiet window through one external singleton watcher.",
+    "New PID and loaded commit are proven; Telegram reconnect and channel health are proven.",
+    "Runtime evidence proves one card, delayed creation, rate-limited edits, and success cleanup; destructive delivery-failure injection is replaced by a safe adapter/runtime probe when live failure cannot be induced safely."
+  ],
+  "verification": [
+    "venv/bin/python -m pytest tests/runtime/test_operation_card_live_probe.py -q -o 'addopts='"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-08-19T09:41:41+02:00"
+  },
+  "work_status": "completed",
+  "review_status": "approved",
+  "review_history": [
+    {
+      "created_at": "2026-08-21T08:26:13+02:00",
+      "agent": "hermes",
+      "status": "approved",
+      "evidence": "A: live PID/Telegram/10-15-180/delete proof in /home/viggo/.hermes/evidence/TG-OPCARD-LIVE-PROOF.json; post-fix critics deleg_50ef0c56 and deleg_f7c837f4.",
+      "transaction_id": "59f19423bae04b1e9883e61d2e8c3425"
+    }
+  ],
+  "evidence": [
+    {
+      "schema": "go-workflow.finish-evidence.v1",
+      "created_at": "2026-08-21T08:26:12+02:00",
+      "task_id": "TG-OPCARD-LIVE-PROOF",
+      "agent": "hermes",
+      "summary": "changed_files=tests/runtime/test_operation_card_live_probe.py,tests/gateway/test_73771_media_resend_dedup.py;verification_command=direct opt-in live Telegram Bot API coroutine plus runtime contract;verification_result=pid 2686648->423744, creation 10.087s, phase gap 15.11s, heartbeat 180.275s, one message id 69329, delete=true;critic=deleg_50ef0c56 and deleg_f7c837f4 A approved;runtime_evidence=/home/viggo/.hermes/evidence/TG-OPCARD-LIVE-PROOF.json",
+      "changed_files": [
+        "tests/runtime/test_operation_card_live_probe.py",
+        "tests/gateway/test_73771_media_resend_dedup.py"
+      ],
+      "no_diff": false,
+      "verification": {
+        "command": "direct opt-in live Telegram Bot API coroutine plus runtime contract",
+        "result": "pid 2686648->423744, creation 10.087s, phase gap 15.11s, heartbeat 180.275s, one message id 69329, delete=true"
+      },
+      "runtime": {
+        "agent": "hermes",
+        "runtime": null,
+        "model": null,
+        "billing_mode": "unknown"
+      },
+      "usage": {
+        "schema": "go-workflow.usage-attribution.v1",
+        "runtime_kind": "unknown",
+        "billing_mode": "unknown",
+        "owner": "hermes",
+        "model": null,
+        "token_estimate": null,
+        "api_equivalent_cost_usd": null,
+        "provider_invoice_cost_usd": null,
+        "cost_label": "api_equivalent_not_invoice_cost"
+      },
+      "review": {
+        "outcome": "deleg_50ef0c56 and deleg_f7c837f4 A approved",
+        "skip_reason": null
+      }
+    }
+  ]
+}
