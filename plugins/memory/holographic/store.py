@@ -7,6 +7,8 @@ import os
 import re
 import sqlite3
 import threading
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -25,7 +27,16 @@ CREATE TABLE IF NOT EXISTS facts (
     helpful_count   INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    hrr_vector      BLOB
+    hrr_vector      BLOB,
+    stable_id       TEXT,
+    content_sha256  TEXT,
+    lifecycle_status TEXT DEFAULT 'active',
+    review_status   TEXT DEFAULT 'needs_review',
+    provenance_quality TEXT DEFAULT 'legacy_unproven',
+    source_ids_json TEXT DEFAULT '[]',
+    source_context_json TEXT DEFAULT '{}',
+    superseded_by   TEXT,
+    forgotten_at    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -176,10 +187,49 @@ class MemoryStore:
         from hermes_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
-        # Migrate: add hrr_vector column if missing (safe for existing databases)
+        # Legacy databases may contain facts that predate the external-content
+        # FTS table.  Updating those rows through the FTS delete trigger can
+        # report a misleading "database disk image is malformed".  Backfill
+        # with triggers disabled, rebuild FTS, then recreate the triggers.
+        self._conn.executescript(
+            "DROP TRIGGER IF EXISTS facts_ai;"
+            "DROP TRIGGER IF EXISTS facts_ad;"
+            "DROP TRIGGER IF EXISTS facts_au;"
+        )
+        # Additive, backward-compatible migration for vault provenance/lifecycle.
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}
-        if "hrr_vector" not in columns:
-            self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+        additions = {
+            "hrr_vector": "BLOB",
+            "stable_id": "TEXT",
+            "content_sha256": "TEXT",
+            "lifecycle_status": "TEXT DEFAULT 'active'",
+            "review_status": "TEXT DEFAULT 'needs_review'",
+            "provenance_quality": "TEXT DEFAULT 'legacy_unproven'",
+            "source_ids_json": "TEXT DEFAULT '[]'",
+            "source_context_json": "TEXT DEFAULT '{}'",
+            "superseded_by": "TEXT",
+            "forgotten_at": "TEXT",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE facts ADD COLUMN {name} {declaration}")
+        rows = self._conn.execute(
+            "SELECT fact_id, content, stable_id, content_sha256 FROM facts"
+        ).fetchall()
+        for row in rows:
+            stable_id = row["stable_id"] or f"fact.holographic.{uuid.uuid4().hex}"
+            content_sha256 = row["content_sha256"] or hashlib.sha256(
+                row["content"].encode("utf-8")
+            ).hexdigest()
+            self._conn.execute(
+                "UPDATE facts SET stable_id = ?, content_sha256 = ? WHERE fact_id = ?",
+                (stable_id, content_sha256, row["fact_id"]),
+            )
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_stable_id ON facts(stable_id) WHERE stable_id IS NOT NULL"
+        )
+        self._conn.execute("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')")
+        self._conn.executescript(_SCHEMA)
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -191,6 +241,12 @@ class MemoryStore:
         content: str,
         category: str = "general",
         tags: str = "",
+        *,
+        source_ids: list[str] | None = None,
+        source_context: dict | None = None,
+        review_status: str = "needs_review",
+        provenance_quality: str | None = None,
+        stable_id: str | None = None,
     ) -> int:
         """Insert a fact and return its fact_id.
 
@@ -203,13 +259,28 @@ class MemoryStore:
             if not content:
                 raise ValueError("content must not be empty")
 
+            normalized_sources = sorted({str(value).strip() for value in (source_ids or []) if str(value).strip()})
+            quality = provenance_quality or ("source_bound" if normalized_sources else "legacy_unproven")
+            if not normalized_sources:
+                quality = "legacy_unproven"
+                review_status = "needs_review"
+            stable_id = stable_id or f"fact.holographic.{uuid.uuid4().hex}"
+            content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
             try:
                 cur = self._conn.execute(
                     """
-                    INSERT INTO facts (content, category, tags, trust_score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO facts (
+                        content, category, tags, trust_score, stable_id,
+                        content_sha256, lifecycle_status, review_status,
+                        provenance_quality, source_ids_json, source_context_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
                     """,
-                    (content, category, tags, self.default_trust),
+                    (
+                        content, category, tags, self.default_trust, stable_id,
+                        content_sha256, review_status, quality,
+                        json.dumps(normalized_sources, sort_keys=True),
+                        json.dumps(source_context or {}, sort_keys=True),
+                    ),
                 )
                 self._conn.commit()
                 fact_id: int = cur.lastrowid  # type: ignore[assignment]
@@ -265,11 +336,15 @@ class MemoryStore:
             sql = f"""
                 SELECT f.fact_id, f.content, f.category, f.tags,
                        f.trust_score, f.retrieval_count, f.helpful_count,
-                       f.created_at, f.updated_at
+                       f.created_at, f.updated_at, f.stable_id,
+                       f.content_sha256, f.lifecycle_status, f.review_status,
+                       f.provenance_quality, f.source_ids_json,
+                       f.source_context_json, f.superseded_by, f.forgotten_at
                 FROM facts f
                 JOIN facts_fts fts ON fts.rowid = f.fact_id
                 WHERE facts_fts MATCH ?
                   AND f.trust_score >= ?
+                  AND f.lifecycle_status = 'active'
                   {category_clause}
                 ORDER BY fts.rank, f.trust_score DESC
                 LIMIT ?
@@ -314,6 +389,8 @@ class MemoryStore:
             if content is not None:
                 assignments.append("content = ?")
                 params.append(content.strip())
+                assignments.append("content_sha256 = ?")
+                params.append(hashlib.sha256(content.strip().encode("utf-8")).hexdigest())
             if tags is not None:
                 assignments.append("tags = ?")
                 params.append(tags)
@@ -354,7 +431,7 @@ class MemoryStore:
             return True
 
     def remove_fact(self, fact_id: int) -> bool:
-        """Delete a fact and its entity links. Returns True if the row existed."""
+        """Tombstone a fact so retrieval stops without erasing audit evidence."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT fact_id, category FROM facts WHERE fact_id = ?", (fact_id,)
@@ -362,10 +439,16 @@ class MemoryStore:
             if row is None:
                 return False
 
+            forgotten_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             self._conn.execute(
-                "DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,)
+                """
+                UPDATE facts
+                SET lifecycle_status = 'forgotten', review_status = 'superseded',
+                    forgotten_at = ?, updated_at = ?
+                WHERE fact_id = ?
+                """,
+                (forgotten_at, forgotten_at, fact_id),
             )
-            self._conn.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
             self._conn.commit()
             self._rebuild_bank(row["category"])
             return True
@@ -390,9 +473,13 @@ class MemoryStore:
 
             sql = f"""
                 SELECT fact_id, content, category, tags, trust_score,
-                       retrieval_count, helpful_count, created_at, updated_at
+                       retrieval_count, helpful_count, created_at, updated_at,
+                       stable_id, content_sha256, lifecycle_status, review_status,
+                       provenance_quality, source_ids_json, source_context_json,
+                       superseded_by, forgotten_at
                 FROM facts
                 WHERE trust_score >= ?
+                  AND lifecycle_status = 'active'
                   {category_clause}
                 ORDER BY trust_score DESC
                 LIMIT ?
@@ -553,7 +640,7 @@ class MemoryStore:
 
             bank_name = f"cat:{category}"
             rows = self._conn.execute(
-                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL",
+                "SELECT hrr_vector FROM facts WHERE category = ? AND hrr_vector IS NOT NULL AND lifecycle_status = 'active'",
                 (category,),
             ).fetchall()
 
@@ -615,7 +702,18 @@ class MemoryStore:
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict:
         """Convert a sqlite3.Row to a plain dict."""
-        return dict(row)
+        value = dict(row)
+        for source, target, fallback in (
+            ("source_ids_json", "source_ids", []),
+            ("source_context_json", "source_context", {}),
+        ):
+            raw = value.pop(source, None)
+            try:
+                parsed = json.loads(raw) if isinstance(raw, str) else fallback
+            except json.JSONDecodeError:
+                parsed = fallback
+            value[target] = parsed if isinstance(parsed, type(fallback)) else fallback
+        return value
 
     @classmethod
     def release_all_under(cls, directory: "str | Path") -> int:
