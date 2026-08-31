@@ -152,7 +152,7 @@ class FactRetriever:
                 )
 
         # Score against individual fact vectors directly
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND lifecycle_status = 'active'"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -212,7 +212,7 @@ class FactRetriever:
         entity_vec = hrr.encode_atom(entity.lower(), self.hrr_dim)
 
         # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND lifecycle_status = 'active'"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -291,7 +291,7 @@ class FactRetriever:
             entity_residuals.append(probe_key)
 
         # Get all facts with vectors
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND lifecycle_status = 'active'"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -356,7 +356,7 @@ class FactRetriever:
         conn = self.store._conn
 
         # Get all facts with vectors and their linked entities
-        where = "WHERE f.hrr_vector IS NOT NULL"
+        where = "WHERE f.hrr_vector IS NOT NULL AND f.lifecycle_status = 'active'"
         params: list = []
         if category:
             where += " AND f.category = ?"
@@ -450,7 +450,7 @@ class FactRetriever:
         """Score facts by similarity to a target vector."""
         conn = self.store._conn
 
-        where = "WHERE hrr_vector IS NOT NULL"
+        where = "WHERE hrr_vector IS NOT NULL AND lifecycle_status = 'active'"
         params: list = []
         if category:
             where += " AND category = ?"
@@ -508,6 +508,7 @@ class FactRetriever:
 
         where_clauses.append("f.trust_score >= ?")
         params.append(min_trust)
+        where_clauses.append("f.lifecycle_status = 'active'")
 
         where_sql = " AND ".join(where_clauses)
 
@@ -538,7 +539,7 @@ class FactRetriever:
 
         results = []
         for row, raw_rank in zip(rows, raw_ranks):
-            fact = dict(row)
+            fact = self.store._row_to_dict(row)
             fact.pop("fts_rank_raw", None)
             fact["fts_rank"] = raw_rank / max_rank  # normalize to [0, 1]
             results.append(fact)
