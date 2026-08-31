@@ -18,6 +18,7 @@ Config in $HERMES_HOME/config.yaml (profile-scoped):
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 from typing import Any, Dict, List
@@ -213,7 +214,13 @@ class HolographicMemoryProvider(MemoryProvider):
             lines = []
             for r in results:
                 trust = r.get("trust_score", r.get("trust", 0))
-                lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
+                stable_id = r.get("stable_id") or f"local-fact:{r.get('fact_id', '?')}"
+                source_ids = r.get("source_ids") or []
+                source_suffix = f" sources={','.join(source_ids)}" if source_ids else " sources=legacy_unproven"
+                lines.append(
+                    f"- [{trust:.1f}] {r.get('content', '')} "
+                    f"[memory_id={stable_id}{source_suffix}]"
+                )
             return "## Holographic Memory\n" + "\n".join(lines)
         except Exception as e:
             logger.debug("Holographic prefetch failed: %s", e)
@@ -229,7 +236,7 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if tool_name == "fact_store":
-            return self._handle_fact_store(args)
+            return self._handle_fact_store(args, **kwargs)
         elif tool_name == "fact_feedback":
             return self._handle_fact_feedback(args)
         return tool_error(f"Unknown tool: {tool_name}")
@@ -246,27 +253,52 @@ class HolographicMemoryProvider(MemoryProvider):
         if action == "add" and self._store and content:
             try:
                 category = "user_pref" if target == "user" else "general"
-                self._store.add_fact(content, category=category)
+                source_ids, source_context = self._source_provenance()
+                self._store.add_fact(
+                    content, category=category,
+                    source_ids=source_ids, source_context=source_context,
+                    review_status="accepted" if source_ids else "needs_review",
+                    provenance_quality="source_bound" if source_ids else "legacy_unproven",
+                )
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
+        if self._store is not None:
+            self._store.close()
         self._store = None
         self._retriever = None
 
     # -- Tool handlers -------------------------------------------------------
 
-    def _handle_fact_store(self, args: dict) -> str:
+    def _source_provenance(self, **kwargs) -> tuple[list[str], dict]:
+        session_id = str(kwargs.get("session_id") or self._session_id or "").strip()
+        context = {"session_id": session_id} if session_id else {}
+        for key in ("message_id", "chat_id", "thread_id", "project_slug"):
+            value = kwargs.get(key)
+            if value is not None and str(value).strip():
+                context[key] = str(value).strip()
+        if not session_id:
+            return [], context
+        digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+        return [f"source.hermes.session.{digest}"], context
+
+    def _handle_fact_store(self, args: dict, **kwargs) -> str:
         try:
             action = args["action"]
             store = self._store
             retriever = self._retriever
 
             if action == "add":
+                source_ids, source_context = self._source_provenance(**kwargs)
                 fact_id = store.add_fact(
                     args["content"],
                     category=args.get("category", "general"),
                     tags=args.get("tags", ""),
+                    source_ids=source_ids,
+                    source_context=source_context,
+                    review_status="accepted" if source_ids else "needs_review",
+                    provenance_quality="source_bound" if source_ids else "legacy_unproven",
                 )
                 return json.dumps({"fact_id": fact_id, "status": "added"})
 
@@ -368,17 +400,26 @@ class HolographicMemoryProvider(MemoryProvider):
         ]
 
         extracted = 0
-        for msg in messages:
+        source_ids, base_context = self._source_provenance()
+        for index, msg in enumerate(messages):
             if msg.get("role") != "user":
                 continue
             content = msg.get("content", "")
             if not isinstance(content, str) or len(content) < 10:
                 continue
 
+            source_context = dict(base_context)
+            source_context["message_id"] = str(msg.get("id") or msg.get("message_id") or index)
+
             for pattern in _PREF_PATTERNS:
                 if pattern.search(content):
                     try:
-                        self._store.add_fact(content[:400], category="user_pref")
+                        self._store.add_fact(
+                            content[:400], category="user_pref",
+                            source_ids=source_ids, source_context=source_context,
+                            review_status="needs_review",
+                            provenance_quality="source_bound" if source_ids else "legacy_unproven",
+                        )
                         extracted += 1
                     except Exception:
                         pass
@@ -387,7 +428,12 @@ class HolographicMemoryProvider(MemoryProvider):
             for pattern in _DECISION_PATTERNS:
                 if pattern.search(content):
                     try:
-                        self._store.add_fact(content[:400], category="project")
+                        self._store.add_fact(
+                            content[:400], category="project",
+                            source_ids=source_ids, source_context=source_context,
+                            review_status="needs_review",
+                            provenance_quality="source_bound" if source_ids else "legacy_unproven",
+                        )
                         extracted += 1
                     except Exception:
                         pass
