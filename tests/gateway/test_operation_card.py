@@ -104,9 +104,9 @@ def test_compact_final_card_states_cover_success_failure_and_stop():
 
 
 def test_builtin_process_provider_exposes_pid_bound_monotonic_counter(monkeypatch, tmp_path):
+    monkeypatch.setattr(process_mod, "CHECKPOINT_PATH", tmp_path / "processes.json")
     registry = ProcessRegistry()
     monkeypatch.setattr(process_mod, "process_registry", registry)
-    monkeypatch.setattr(process_mod, "CHECKPOINT_PATH", tmp_path / "processes.json")
     session = registry.spawn_local(
         command="sleep 1",
         cwd=str(tmp_path),

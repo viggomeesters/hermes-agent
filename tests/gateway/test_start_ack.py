@@ -197,8 +197,12 @@ async def test_queued_turn_gets_ack_only_when_it_actually_starts(monkeypatch):
 
     release_first.set()
     await asyncio.wait_for(second_started.wait(), timeout=1)
-    await asyncio.sleep(0)
+    visible = []
+    for _ in range(100):
+        visible = [content for _chat, content, _kwargs in adapter.sent]
+        if "final:second" in visible:
+            break
+        await asyncio.sleep(0.01)
 
-    visible = [content for _chat, content, _kwargs in adapter.sent]
     assert visible.count("⚙️ Bezig.") == 1
     assert visible.index("⚙️ Bezig.") < visible.index("final:second")

@@ -7482,7 +7482,9 @@ class BasePlatformAdapter(ABC):
                     "_post_successful_delivery_callbacks",
                     {},
                 ).pop(session_key, None)
-            if callable(_post_success_cb) and not delivery_outcome.cleanup_succeeded:
+            if callable(_post_success_cb) and not bool(
+                delivery_attempted and delivery_succeeded
+            ):
                 _delivery_failed_cb = getattr(
                     _post_success_cb,
                     "_hermes_on_delivery_failed",

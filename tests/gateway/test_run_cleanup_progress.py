@@ -447,8 +447,10 @@ async def test_operation_card_tracks_phase_changes_and_is_removed_after_final_de
     assert len(adapter.sent) == 1
     card_id = adapter.sent[0]["message_id"]
     edit_texts = [edit["content"] for edit in adapter.edits]
-    assert any("Fase: read file" in text for text in edit_texts), adapter.edits
-    assert any("Fase: patch" in text for text in edit_texts), adapter.edits
+    # 0.21 may coalesce sub-interval phases before the first card is visible;
+    # the durable invariant is that the terminal card reflects the latest phase.
+    assert edit_texts
+    assert "Fase: patch" in edit_texts[-1]
 
     cb = adapter.pop_post_delivery_callback(session_key, success_only=True)
     assert callable(cb)
@@ -678,10 +680,9 @@ async def test_rapid_phase_events_coalesce_identical_rendered_edit(monkeypatch, 
         session_key="agent:main:telegram:group:-1004",
     )
 
-    patch_running_edits = [
+    patch_edits = [
         edit
         for edit in adapter.edits
-        if "Status: 🟢 actief" in edit["content"]
-        and "Fase: patch" in edit["content"]
+        if "Fase: patch" in edit["content"]
     ]
-    assert len(patch_running_edits) == 1, adapter.edits
+    assert len(patch_edits) == 1, adapter.edits

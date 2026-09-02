@@ -1213,6 +1213,37 @@ async def _send_or_update_status_coro(
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+async def _send_long_running_heartbeat_coro(
+    adapter,
+    chat_id,
+    content,
+    metadata,
+    *,
+    append_only: bool,
+    message_id: Optional[str] = None,
+):
+    """Send durable Telegram evidence or update another platform in place."""
+    if append_only:
+        return await adapter.send(chat_id, content, metadata=metadata), None
+
+    result = None
+    if message_id:
+        try:
+            result = await adapter.edit_message(chat_id, message_id, content)
+        except Exception as exc:
+            logger.debug("Heartbeat edit failed: %s", exc)
+    if result and getattr(result, "success", False):
+        return result, message_id
+
+    result = await adapter.send(chat_id, content, metadata=metadata)
+    next_message_id = (
+        str(result.message_id)
+        if getattr(result, "success", False) and getattr(result, "message_id", None)
+        else None
+    )
+    return result, next_message_id
+
+
 def _approval_send_outcome(future, timeout: float) -> str:
     """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
 
@@ -7442,6 +7473,14 @@ class TurnRunner:
 # DB-backed commands and is how many suites construct a bare runner).  A plain
 # ``None`` cannot express both.  Mirrors ``gateway.session._DB_UNPINNED``.
 _SESSION_DB_UNPINNED = object()
+
+
+def _mark_visible_turn_progress(ctx: TurnContext) -> None:
+    """Record first visible progress without making diagnostics a send dependency."""
+    deadline = ctx.first_progress_deadline
+    if deadline is not None:
+        deadline.mark_visible()
+    mark_turn_phase(ctx.source, ctx.event_message_id, "first_progress")
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -30641,6 +30680,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             log_mode_enabled=log_mode_enabled,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             needs_progress_queue=needs_progress_queue,
+            first_progress_deadline=FirstProgressDeadline(),
             _native_slack_task_cards=_native_slack_task_cards,
             _voice_ack_fired=_voice_ack_fired,
             _voice_ack_guild=_voice_ack_guild,
@@ -31142,6 +31182,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             _operation_tracker = None
 
+        from gateway.operation_card_controller import OperationCardController
+
         _operation_card_loop = asyncio.get_running_loop()
         _operation_card_controller = OperationCardController(
             enabled=_operation_cards_enabled,
@@ -31303,29 +31345,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     )
                 try:
-                    _notify_res = None
-                    if _heartbeat_msg_id:
-                        try:
-                            _notify_res = await _notify_adapter.edit_message(
-                                source.chat_id,
-                                _heartbeat_msg_id,
-                                _heartbeat_text,
+                    if _operation_cards_enabled:
+                        _notify_res, _next_heartbeat_msg_id = (
+                            await _send_operation_card_update(
+                                _notify_adapter,
+                                _agent_ref,
                             )
-                        except Exception as _ee:
-                            logger.debug("Heartbeat edit failed: %s", _ee)
-                            _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
-                        _notify_res = await _notify_adapter.send(
-                            source.chat_id,
-                            _heartbeat_text,
-                            metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
                         )
-                        if getattr(_notify_res, "success", False) and getattr(
-                            _notify_res, "message_id", None
+                    else:
+                        _append_only_heartbeat = source.platform == Platform.TELEGRAM
+                        _notify_res, _next_heartbeat_msg_id = (
+                            await _send_long_running_heartbeat_coro(
+                                _notify_adapter,
+                                source.chat_id,
+                                _heartbeat_text,
+                                _non_conversational_metadata(
+                                    _status_thread_metadata,
+                                    platform=source.platform,
+                                ),
+                                append_only=_append_only_heartbeat,
+                                message_id=_heartbeat_msg_id,
+                            )
+                        )
+                    if _next_heartbeat_msg_id != _heartbeat_msg_id:
+                        _heartbeat_msg_id = _next_heartbeat_msg_id
+                        if (
+                            _cleanup_progress
+                            and _heartbeat_msg_id
+                            and not _operation_cards_enabled
                         ):
-                            _heartbeat_msg_id = str(_notify_res.message_id)
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
+                            _cleanup_msg_ids.append(_heartbeat_msg_id)
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 

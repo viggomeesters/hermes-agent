@@ -550,6 +550,7 @@ class EmailAdapter(BasePlatformAdapter):
         # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
+        self._inbound_enabled = bool(extra.get("inbound_enabled", True))
         self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
@@ -702,6 +703,32 @@ class EmailAdapter(BasePlatformAdapter):
                 "email_missing_configuration", message, retryable=False
             )
             return False
+
+        if not self._inbound_enabled:
+            try:
+                smtp = self._connect_smtp()
+                try:
+                    smtp.login(self._address, self._password)
+                finally:
+                    smtp.quit()
+                logger.info("[Email] SMTP-only connection test passed.")
+            except smtplib.SMTPAuthenticationError as e:
+                self._set_fatal_error(
+                    "email_auth_error",
+                    f"SMTP authentication failed for {self._address}: {e}",
+                    retryable=False,
+                )
+                return False
+            except Exception as e:
+                self._set_fatal_error(
+                    "email_smtp_connect_error",
+                    f"SMTP connection to {self._smtp_host} failed: {e}",
+                    retryable=True,
+                )
+                return False
+            print(f"[Email] Connected outbound-only as {self._address}")
+            self._wire_plugin_handlers(None)
+            return True
 
         try:
             # Test IMAP connection. The handle is closed in ``finally`` —

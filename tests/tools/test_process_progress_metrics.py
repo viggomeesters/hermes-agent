@@ -1,4 +1,5 @@
 import json
+import time
 
 from tools import process_registry as process_mod
 from tools.process_registry import ProcessRegistry
@@ -34,7 +35,9 @@ def test_progress_metrics_are_checkpointed_for_restart(monkeypatch, tmp_path):
         session_key="session-test",
     )
     try:
-        session._completion_event.wait(0.2)
+        deadline = time.monotonic() + 2.0
+        while session.output_chars_total < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
         registry._write_checkpoint()
         entry = next(
             row for row in json.loads(checkpoint.read_text())

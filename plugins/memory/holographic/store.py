@@ -3,6 +3,8 @@ SQLite-backed fact store with entity resolution and trust scoring.
 Single-user Hermes memory store plugin.
 """
 
+import hashlib
+import json
 import os
 import re
 import sqlite3
