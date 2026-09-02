@@ -5,6 +5,7 @@ from gateway.operation_card import (
     collect_progress_snapshot,
     register_progress_provider,
     render_operation_card,
+    terminal_failure_phase,
     unregister_progress_provider,
 )
 from tools import process_registry as process_mod
@@ -101,6 +102,16 @@ def test_compact_final_card_states_cover_success_failure_and_stop():
     assert "Status: ✅ afgerond" in render_operation_card(success)
     assert "Status: 🔴 mislukt" in render_operation_card(failed)
     assert "Status: ⏹ gestopt" in render_operation_card(stopped)
+
+
+def test_persistence_failure_replaces_stale_tool_phase():
+    assert terminal_failure_phase(
+        {"failed": True, "reason": "session_persistence_failed"}
+    ) == "sessieopslag"
+    assert terminal_failure_phase(
+        {"failed": True, "reason": "provider_error"}
+    ) is None
+    assert terminal_failure_phase({"failed": False}) is None
 
 
 def test_builtin_process_provider_exposes_pid_bound_monotonic_counter(monkeypatch, tmp_path):

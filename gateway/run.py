@@ -25014,6 +25014,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if isinstance(_card_result, dict) and _card_result.get("failed")
                             else "completed"
                         )
+                        if _card_final_status == "failed":
+                            from gateway.operation_card import terminal_failure_phase
+
+                            _terminal_phase = terminal_failure_phase(_card_result)
+                            if _terminal_phase:
+                                _operation_card_controller.request_phase_update(
+                                    "turn.failed", _terminal_phase
+                                )
                     _card_adapter = self._adapter_for_source(source)
                     if _card_adapter is not None:
                         await _send_operation_card_update(

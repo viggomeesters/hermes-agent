@@ -111,6 +111,23 @@ _PROVIDERS: list[tuple[int, str, Provider]] = []
 _PROVIDER_LOCK = threading.Lock()
 
 
+def terminal_failure_phase(result: object) -> Optional[str]:
+    """Return a truthful terminal phase for failures outside a tool call.
+
+    Tool lifecycle updates normally own the phase. A persistence failure
+    happens after the last tool completed, so retaining that tool name falsely
+    attributes the failure to it (for example ``browser navigate``). Only map
+    explicit non-tool terminal reasons here; unknown failures keep their last
+    measured phase.
+    """
+    if not isinstance(result, dict) or not result.get("failed"):
+        return None
+    reason = str(result.get("reason") or "").strip().lower()
+    if reason == "session_persistence_failed":
+        return "sessieopslag"
+    return None
+
+
 def register_progress_provider(name: str, provider: Provider, *, priority: int = 100) -> None:
     """Register a structured progress provider; lower priority runs first."""
     with _PROVIDER_LOCK:
