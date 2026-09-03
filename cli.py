@@ -17457,6 +17457,11 @@ def _configure_quiet_single_query(cli) -> None:
     cli.show_reasoning = False
 
 
+def _configure_no_fallback(cli) -> None:
+    """Disable runtime failover without discarding provider configuration."""
+    cli._fallback_model = []
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -17481,6 +17486,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    no_fallback: bool = False,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -17617,6 +17623,9 @@ def main(
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
+
+    if no_fallback:
+        _configure_no_fallback(cli)
 
     if parsed_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(

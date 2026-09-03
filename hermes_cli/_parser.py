@@ -226,6 +226,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--no-fallback",
+        action="store_true",
+        default=False,
+        help="Disable configured provider/model fallbacks for this run",
+    )
+    _inherited_flag(
+        parser,
         "--ignore-rules",
         action="store_true",
         default=False,
@@ -404,6 +411,13 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Ignore ~/.hermes/config.yaml and fall back to built-in defaults (credentials in .env are still loaded). Useful for isolated CI runs, reproduction, and third-party integrations.",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--no-fallback",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Disable configured provider/model fallbacks for this run while retaining provider configuration.",
     )
     _inherited_flag(
         chat_parser,
