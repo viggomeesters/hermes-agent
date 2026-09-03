@@ -17451,6 +17451,12 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def _configure_quiet_single_query(cli) -> None:
+    """Keep non-interactive stdout limited to the final response."""
+    cli.tool_progress_mode = "off"
+    cli.show_reasoning = False
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -17787,7 +17793,7 @@ def main(
             if quiet:
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
-                cli.tool_progress_mode = "off"
+                _configure_quiet_single_query(cli)
                 if cli._ensure_runtime_credentials():
                     effective_query: Any = query
                     if single_query_images or single_query_image_urls:
