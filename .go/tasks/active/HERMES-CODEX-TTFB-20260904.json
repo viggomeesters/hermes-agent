@@ -1,0 +1,39 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "shareable_delivery": "auto",
+  "id": "HERMES-CODEX-TTFB-20260904",
+  "project": "hermes-agent",
+  "status": "active",
+  "summary": "Prevent false Codex provider failures during large-session resume bursts",
+  "description": "Investigate the 2026-09-04 Telegram provider-failure burst, document the incident and common Hermes failure modes, fix the contradictory large-request TTFB scaling/cap behavior, and prove focused plus live runtime behavior without enabling unreliable fallbacks.",
+  "scope": {
+    "read": [
+      "agent/chat_completion_helpers.py,tests/agent/test_codex_ttfb_watchdog.py,gateway/run.py,website/docs,docs,/home/viggo/.hermes/logs,/home/viggo/.hermes/config.yaml,/home/viggo/github/bertus-agent-stack/audits"
+    ],
+    "modify": [
+      "agent/chat_completion_helpers.py,tests/agent/test_codex_ttfb_watchdog.py,website/docs,website/sidebars.ts,docs,.go"
+    ]
+  },
+  "acceptance": [
+    "R1: Exact 2026-09-04 failure window, affected sessions, root cause, trigger, and update/live status are captured in a dated incident report.",
+    "R2: Hermes troubleshooting documentation contains a concise frequently-occurring-errors matrix with signatures, causes, checks, and fixes.",
+    "R3: Large Codex requests retain a finite watchdog but the default maximum no longer negates context-size scaling; explicit operator caps remain honored.",
+    "R4: Regression tests prove default scaling above 100k tokens and explicit cap behavior.",
+    "R5: Focused tests, broader relevant tests, config/doctor checks, direct provider probes, and loaded runtime evidence are recorded truthfully."
+  ],
+  "verification": [
+    "venv/bin/python -m pytest tests/agent/test_codex_ttfb_watchdog.py -q -o 'addopts='",
+    "venv/bin/python -m pytest tests/run_agent/test_provider_fallback.py tests/agent/test_codex_ttfb_watchdog.py -q -o 'addopts='",
+    "git diff --check"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-09-04T08:37:20+02:00"
+  },
+  "work_status": "in_progress",
+  "review_status": "none",
+  "review_history": [],
+  "evidence": []
+}

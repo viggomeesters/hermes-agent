@@ -8,6 +8,8 @@ sidebar_position: 1
 
 This page covers setting up inference providers for Hermes Agent — from cloud APIs like OpenRouter and Anthropic, to self-hosted endpoints like Ollama and vLLM, to advanced routing and fallback configurations. You need at least one provider configured to use Hermes.
 
+If a configured model starts failing, use the [Provider Troubleshooting guide](/guides/provider-troubleshooting) to distinguish authentication, quota, concurrency, upstream outages, stream timeouts, and broken fallbacks without exposing raw provider details.
+
 ## Inference Providers
 
 You need at least one way to connect to an LLM. Use `hermes model` to switch providers and models interactively, or configure directly:

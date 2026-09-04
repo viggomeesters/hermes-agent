@@ -293,20 +293,94 @@ def test_wait_notice_formatting_error_does_not_abort_request(monkeypatch):
 
 
 
+def test_large_codex_ttfb_default_scaling_is_not_undone_by_implicit_cap(monkeypatch):
+    """A >100k-token request gets the 180s default patience budget.
+
+    The maximum is an operator override, not an implicit 120s ceiling that
+    silently cancels the large-context scaling performed immediately before it.
+    """
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_MAX_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_STRICT", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", raising=False)
+
+    enabled, timeout = h._resolve_codex_ttfb_watchdog(
+        watchdog_enabled=True,
+        openai_codex_backend=True,
+        estimated_tokens=150_000,
+    )
+
+    assert enabled is True
+    assert timeout == 180.0
+
+
+def test_large_codex_ttfb_explicit_operator_cap_is_honored(monkeypatch):
+    """Operators can still deliberately cap large-request TTFB patience."""
+    from agent import chat_completion_helpers as h
+
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "90")
+    monkeypatch.delenv("HERMES_CODEX_TTFB_STRICT", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", raising=False)
+
+    enabled, timeout = h._resolve_codex_ttfb_watchdog(
+        watchdog_enabled=True,
+        openai_codex_backend=True,
+        estimated_tokens=150_000,
+    )
+
+    assert enabled is True
+    assert timeout == 90.0
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "expected"),
+    [
+        ("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "nan", 180.0),
+        ("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "inf", 180.0),
+        ("HERMES_CODEX_TTFB_MAX_SECONDS", "nan", 180.0),
+        ("HERMES_CODEX_TTFB_MAX_SECONDS", "inf", 180.0),
+    ],
+)
+def test_codex_ttfb_ignores_non_finite_operator_values(
+    monkeypatch, name, value, expected
+):
+    from agent import chat_completion_helpers as h
+
+    for env_name in (
+        "HERMES_CODEX_TTFB_TIMEOUT_SECONDS",
+        "HERMES_CODEX_TTFB_MAX_SECONDS",
+        "HERMES_CODEX_TTFB_STRICT",
+        "HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv(name, value)
+
+    enabled, timeout = h._resolve_codex_ttfb_watchdog(
+        watchdog_enabled=True,
+        openai_codex_backend=True,
+        estimated_tokens=150_000,
+    )
+
+    assert enabled is True
+    assert timeout == expected
+
+
 def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkeypatch):
-    """#64507 regression: a large Codex request (TTFB watchdog disabled by the
-    size gate, stale floor *raised*) that never emits a single byte must still
+    """#64507 regression: a large Codex request (adaptive TTFB budget and
+    stale floor both raised) that never emits a single byte must still
     be reclaimed at a finite hard ceiling — not hang for 13+ minutes while the
     worker stays idle and the session shows as active.
 
-    Uses the real default TTFB threshold (120s) and asserts the request dies at
-    the hard ceiling regardless of the size-based TTFB disable.
+    Uses the real default TTFB threshold and asserts the request dies at the
+    hard ceiling before either adaptive watchdog budget is exhausted.
     """
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override) → for a
-    # >10k-token request the no-byte TTFB watchdog is auto-disabled.
+    # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override).
     monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "3")
 
     closes: list = []
@@ -332,7 +406,7 @@ def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkey
 
     monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
 
-    large_input = "x" * 44_000  # ~11k estimated tokens → TTFB disabled, stale raised
+    large_input = "x" * 44_000  # ~11k tokens → adaptive TTFB/stale budgets raised
     t0 = time.time()
     try:
         with pytest.raises(TimeoutError) as excinfo:

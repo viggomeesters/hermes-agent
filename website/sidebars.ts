@@ -709,6 +709,7 @@ const sidebars: SidebarsConfig = {
         'guides/cron-script-only',
         'guides/automation-blueprints',
         'guides/cron-troubleshooting',
+        'guides/provider-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',
         'guides/github-pr-review-agent',
