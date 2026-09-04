@@ -1,0 +1,43 @@
+{
+  "schema": "go-workflow.stack-update-rollback.v1",
+  "status": "applied",
+  "created_at": "2026-09-04T06:35:22.317638+00:00",
+  "target": ".go/project.json",
+  "from_ref": "v0.3.12",
+  "to_ref": "v0.3.14",
+  "resolved_commit": "2fb25c5b447e5c0622dca2d24f4f731adeb9f097",
+  "before_project": {
+    "schema": "go-workflow.repo-local.project.v1",
+    "kind": "project",
+    "id": "hermes-agent",
+    "name": "Hermes Agent",
+    "source_of_truth": "repo-local",
+    "contract_version": 2,
+    "project_mode": "project",
+    "required_stack_version": "0.3.12",
+    "stack_ref": "v0.3.12",
+    "default_verification": [
+      "venv/bin/python -m pytest tests/gateway/test_ephemeral_reply.py tests/gateway/test_post_delivery_callback_chaining.py tests/gateway/test_run_cleanup_progress.py -q -o 'addopts='"
+    ],
+    "links": {
+      "repo": "https://github.com/NousResearch/hermes-agent"
+    }
+  },
+  "after_project": {
+    "schema": "go-workflow.repo-local.project.v1",
+    "kind": "project",
+    "id": "hermes-agent",
+    "name": "Hermes Agent",
+    "source_of_truth": "repo-local",
+    "contract_version": 2,
+    "project_mode": "project",
+    "required_stack_version": "0.3.14",
+    "stack_ref": "v0.3.14",
+    "default_verification": [
+      "venv/bin/python -m pytest tests/gateway/test_ephemeral_reply.py tests/gateway/test_post_delivery_callback_chaining.py tests/gateway/test_run_cleanup_progress.py -q -o 'addopts='"
+    ],
+    "links": {
+      "repo": "https://github.com/NousResearch/hermes-agent"
+    }
+  }
+}
