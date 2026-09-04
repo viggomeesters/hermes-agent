@@ -95,8 +95,8 @@ At the time of the original incident analysis on September 4, 2026, the answer t
 - Repo-local workflow readiness: stack `v0.3.14`, exact pinned ref, doctor `ready=true`, contract valid.
 - `hermes doctor` → config version 33 current, OpenAI Codex authenticated, required packages and gateway service prerequisites available. The reported state-DB diagnostic timeout and frontend dependency advisories are separate maintenance findings, not provider-connectivity failures.
 - Two real configured-provider probes were run with fallback disabled and the prompt `Reply exactly: PROVIDER_PROBE_OK`:
-  - probe 1: exact response, one `openai-codex/gpt-5.6-sol` API call, 9 seconds;
-  - probe 2: exact response, one `openai-codex/gpt-5.6-sol` API call, 8 seconds.
+  - probe 1: response `PROVIDER_PROBE_OK`, one `openai-codex/gpt-5.6-sol` API call, 9 seconds;
+  - probe 2: response `PROVIDER_PROBE_OK`, one `openai-codex/gpt-5.6-sol` API call, 8 seconds.
 - Loaded runtime proof: `hermes-gateway.service` is `active/running`; PID `3206546` started at `2026-09-04 17:58:25 CEST` from `/home/viggo/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run`. The source checkout contains provider fix `ad3c90d091` and was at `45ed8d2500` for the final runtime readback.
 - Live Telegram document smokes through that loaded adapter succeeded as message IDs `72771` and `72772`; no fallback-success ambiguity remained.
 
