@@ -84,16 +84,23 @@ As of **September 4, 2026**:
 - a temporary staging rehearsal started candidate code on September 2 and then rolled it back; stale `code_version`/`code_sha` fields survived in `gateway_state.json` and are not proof of the current loaded runtime;
 - this TTFB defect was present in both live and candidate code.
 
-Therefore, the answer to “was the Hermes update finally applied?” is **no**. It was prepared and tested, not made live. This incident's fix must be included before or during the final cutover.
+At the time of the original incident analysis on September 4, 2026, the answer to “was the Hermes update finally applied?” was **no**: it had been prepared and tested but not loaded in production. That changed with the verified gateway cutover later the same day; the evidence below records the post-cutover state.
 
-## Verification plan
+## Verification results — September 4, 2026
 
-1. Run the focused Codex watchdog tests.
-2. Run provider fallback plus watchdog regression tests.
-3. Run syntax, diff, repo workflow, and gateway health checks.
-4. Probe the configured provider repeatedly with a minimal prompt.
-5. Load the fixed source in the gateway service when active agents have drained, then perform a Telegram smoke test.
-6. Confirm the gateway logs show successful completion without new terminal retry failures.
+- Focused and broader provider regression command:
+  `venv/bin/python -m pytest tests/agent/test_codex_ttfb_watchdog.py tests/run_agent/test_provider_fallback.py -q -o 'addopts='`
+  → **28 passed**.
+- `git diff --check ad3c90d091^ ad3c90d091` → passed.
+- Repo-local workflow readiness: stack `v0.3.14`, exact pinned ref, doctor `ready=true`, contract valid.
+- `hermes doctor` → config version 33 current, OpenAI Codex authenticated, required packages and gateway service prerequisites available. The reported state-DB diagnostic timeout and frontend dependency advisories are separate maintenance findings, not provider-connectivity failures.
+- Two real configured-provider probes were run with fallback disabled and the prompt `Reply exactly: PROVIDER_PROBE_OK`:
+  - probe 1: exact response, one `openai-codex/gpt-5.6-sol` API call, 9 seconds;
+  - probe 2: exact response, one `openai-codex/gpt-5.6-sol` API call, 8 seconds.
+- Loaded runtime proof: `hermes-gateway.service` is `active/running`; PID `3206546` started at `2026-09-04 17:58:25 CEST` from `/home/viggo/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run`. The source checkout contains provider fix `ad3c90d091` and was at `45ed8d2500` for the final runtime readback.
+- Live Telegram document smokes through that loaded adapter succeeded as message IDs `72771` and `72772`; no fallback-success ambiguity remained.
+
+These results supersede the earlier staged-only status above: the provider fix is now present in the loaded gateway source and direct no-fallback Codex calls complete successfully.
 
 ## Follow-up
 

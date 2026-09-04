@@ -61,9 +61,9 @@ Relevant environment variables:
 | `HERMES_CODEX_TTFB_STRICT=1` | Keep the smaller configured base instead of scaling it for large contexts. |
 | `HERMES_CODEX_TTFB_MAX_SECONDS` | Optional explicit maximum. Unset/`0` means no extra cap; the adaptive timeout remains authoritative. |
 | `HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS` | Maximum idle gap after at least one Codex stream event. |
-| `HERMES_CODEX_HARD_TIMEOUT_SECONDS` | Finite total-request backstop for genuinely wedged calls. |
+| `HERMES_CODEX_HARD_TIMEOUT_SECONDS` | Total-request backstop for genuinely wedged calls. Keep it finite in normal operation; explicit `0` disables this final ceiling for controlled diagnostics only. |
 
-Do not solve a slow large-context request by setting every timeout to infinity. That replaces visible failures with invisible stuck agents. Keep the hard timeout finite and adjust only the watchdog proven by the logs.
+Do not solve a slow large-context request by setting every timeout to infinity. That replaces visible failures with invisible stuck agents. Keep the hard timeout finite in normal operation and adjust only the watchdog proven by the logs. The supported `HERMES_CODEX_HARD_TIMEOUT_SECONDS=0` escape hatch is for bounded operator diagnostics, not a safe production default.
 
 ## Distinguish a restart from an upgrade
 
