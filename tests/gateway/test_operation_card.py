@@ -49,6 +49,57 @@ def test_zero_delta_becomes_stalled_after_freshness_window_even_with_live_worker
     assert "geen meetbare voortgang" in render_operation_card(stale)
 
 
+def test_fresh_activity_heartbeat_prevents_false_stall_with_unchanged_counter():
+    tracker = ProgressTracker(stall_after=60)
+    tracker.observe(
+        ProgressSnapshot(
+            **{
+                **_sample(now=0, current=0, phase="context compression in progress").__dict__,
+                "activity_at": 0,
+            }
+        )
+    )
+
+    view = tracker.observe(
+        ProgressSnapshot(
+            **{
+                **_sample(now=61, current=0, phase="context compression in progress").__dict__,
+                "activity_at": 55,
+            }
+        )
+    )
+
+    assert view.delta == 0
+    assert view.stalled is False
+    assert view.seconds_since_change == 6
+    assert "Status: 🟢 actief" in render_operation_card(view)
+
+
+def test_stale_activity_heartbeat_still_reports_no_progress():
+    tracker = ProgressTracker(stall_after=60)
+    tracker.observe(
+        ProgressSnapshot(
+            **{
+                **_sample(now=0, current=0, phase="context compression in progress").__dict__,
+                "activity_at": 0,
+            }
+        )
+    )
+
+    view = tracker.observe(
+        ProgressSnapshot(
+            **{
+                **_sample(now=61, current=0, phase="context compression in progress").__dict__,
+                "activity_at": 0,
+            }
+        )
+    )
+
+    assert view.stalled is True
+    assert view.seconds_since_change == 61
+    assert "Status: 🔴 geen meetbare voortgang" in render_operation_card(view)
+
+
 def test_counter_reset_never_reports_negative_progress_or_false_stall():
     tracker = ProgressTracker(stall_after=60)
     tracker.observe(_sample(now=10, current=80))

@@ -24122,12 +24122,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ))
             if snapshot.current is None and activity.get("api_call_count") is not None:
                 from dataclasses import replace
+                try:
+                    _activity_at = float(activity.get("last_activity_ts"))
+                    if not math.isfinite(_activity_at):
+                        _activity_at = None
+                except (TypeError, ValueError):
+                    _activity_at = None
                 snapshot = replace(
                     snapshot,
                     current=float(activity["api_call_count"]),
                     total=None,
                     unit="model calls",
                     started_at=_notify_start,
+                    activity_at=_activity_at,
                     sampled_at=time.time(),
                 )
             effective_status = status

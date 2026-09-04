@@ -26,6 +26,7 @@ class ProgressSnapshot:
     worker_id: str = "agent"
     sampled_at: Optional[float] = None
     started_at: Optional[float] = None
+    activity_at: Optional[float] = None
     status: str = "running"
 
 
@@ -60,8 +61,13 @@ class ProgressTracker:
         reset = False
 
         if self.last_change_at is None and snapshot.current is not None:
-            baseline = snapshot.started_at if snapshot.started_at is not None else now
-            self.last_change_at = min(now, float(baseline))
+            baselines = [
+                float(value)
+                for value in (snapshot.started_at, snapshot.activity_at)
+                if value is not None and math.isfinite(float(value))
+            ]
+            baseline = max(baselines) if baselines else now
+            self.last_change_at = min(now, baseline)
 
         if same_counter:
             raw_delta = float(snapshot.current) - float(previous.current)
@@ -81,6 +87,14 @@ class ProgressTracker:
                             and float(snapshot.total) >= float(snapshot.current)
                         ):
                             eta = (float(snapshot.total) - float(snapshot.current)) / rate
+                elif (
+                    previous.activity_at is not None
+                    and snapshot.activity_at is not None
+                    and math.isfinite(float(previous.activity_at))
+                    and math.isfinite(float(snapshot.activity_at))
+                    and float(snapshot.activity_at) > float(previous.activity_at)
+                ):
+                    self.last_change_at = min(now, float(snapshot.activity_at))
         elif snapshot.current is not None and previous is not None:
             self.last_change_at = now
 
