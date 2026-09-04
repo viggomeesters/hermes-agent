@@ -6517,12 +6517,17 @@ class BasePlatformAdapter(ABC):
                         _record_delivery(media_result)
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
-                            await self._notify_media_delivery_failure(
-                                event.source.chat_id,
-                                media_path,
-                                is_voice=is_voice,
-                                metadata=_final_thread_metadata,
+                            _already_notified = (
+                                isinstance(media_result.raw_response, dict)
+                                and bool(media_result.raw_response.get("delivery_failure_notified"))
                             )
+                            if not _already_notified:
+                                await self._notify_media_delivery_failure(
+                                    event.source.chat_id,
+                                    media_path,
+                                    is_voice=is_voice,
+                                    metadata=_final_thread_metadata,
+                                )
                     except Exception as media_err:
                         _record_delivery(
                             SendResult(success=False, error=str(media_err))
@@ -6555,11 +6560,16 @@ class BasePlatformAdapter(ABC):
                                 ext,
                                 file_result.error,
                             )
-                            await self._notify_media_delivery_failure(
-                                event.source.chat_id,
-                                file_path,
-                                metadata=_final_thread_metadata,
+                            _already_notified = (
+                                isinstance(file_result.raw_response, dict)
+                                and bool(file_result.raw_response.get("delivery_failure_notified"))
                             )
+                            if not _already_notified:
+                                await self._notify_media_delivery_failure(
+                                    event.source.chat_id,
+                                    file_path,
+                                    metadata=_final_thread_metadata,
+                                )
                     except Exception as file_err:
                         _record_delivery(
                             SendResult(success=False, error=str(file_err))

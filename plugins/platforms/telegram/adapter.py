@@ -7241,7 +7241,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Failed to send document: %s",
                 self.name, _redact_telegram_error_text(e),
             )
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
+            fallback = await super().send_document(
+                chat_id, file_path, caption, file_name, reply_to, metadata=metadata
+            )
+            # The fallback is a user-visible failure notice, not successful
+            # document delivery. Preserve that distinction for operation cards,
+            # post-delivery hooks, retries, and incident learning.
+            return SendResult(
+                success=False,
+                message_id=fallback.message_id,
+                error=f"Telegram document upload failed: {type(e).__name__}",
+                raw_response={"delivery_failure_notified": bool(fallback.success)},
+            )
 
     async def send_video(
         self,
