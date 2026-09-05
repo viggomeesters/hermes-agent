@@ -452,6 +452,7 @@ from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
 from hermes_cli.subcommands.debug import build_debug_parser
+from hermes_cli.error_cmd import build_errors_parser
 from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.import_agent import build_import_agent_parser
@@ -10462,7 +10463,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
+        "dump", "egress", "errors", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pets", "plugins", "portal", "profile",
@@ -11395,6 +11396,11 @@ def main():
     # debug command  (parser built in hermes_cli/subcommands/debug.py)
     # =========================================================================
     build_debug_parser(subparsers, cmd_debug=cmd_debug)
+
+    # =========================================================================
+    # errors command — profile-scoped incident and verified-fix knowledge
+    # =========================================================================
+    build_errors_parser(subparsers)
 
     # =========================================================================
     # backup command  (parser built in hermes_cli/subcommands/backup.py)

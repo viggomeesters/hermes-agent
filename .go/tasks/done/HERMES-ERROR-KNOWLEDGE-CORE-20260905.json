@@ -1,0 +1,94 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "shareable_delivery": "none",
+  "id": "HERMES-ERROR-KNOWLEDGE-CORE-20260905",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Add central profile-aware error knowledge service and CLI",
+  "description": "Move the incident/fix database engine into Hermes core. Store through get_hermes_home() under state/error-knowledge, expose supported Hermes CLI operations, preserve the existing database contract, and prove profile isolation, redaction, deduplication, regression reopening, verified resolution and JSONL export.",
+  "scope": {
+    "read": [
+      "hermes_constants.py",
+      "hermes_cli/",
+      "agent/",
+      "tests/hermes_cli/",
+      "/home/viggo/github/viggo-agent-skills/skills/error-learning/scripts/error_knowledge.py"
+    ],
+    "modify": [
+      "hermes_cli/error_knowledge.py",
+      "hermes_cli/error_cmd.py",
+      "hermes_cli/main.py",
+      "tests/hermes_cli/test_error_knowledge.py",
+      ".go"
+    ]
+  },
+  "acceptance": [
+    "Hermes owns the canonical incident engine and resolves the database path through get_hermes_home().",
+    "CLI supports search, record, resolve, list, stats and JSONL export without depending on a user skill directory.",
+    "Existing errors.sqlite3 remains readable and writable without data loss or schema fork.",
+    "Tests prove profile isolation, secure permissions, redaction, stable deduplication, regression reopening and complete-resolution enforcement."
+  ],
+  "verification": [
+    "venv/bin/python -m pytest tests/hermes_cli/test_error_knowledge.py -q -o 'addopts='",
+    "venv/bin/python -m pytest tests/hermes_cli/test_error_knowledge.py tests/hermes_cli/test_commands.py tests/hermes_cli/test_subcommands_batch.py tests/hermes_cli/test_apply_profile_override.py -q -o 'addopts='",
+    "HERMES_HOME=/home/viggo/.hermes venv/bin/hermes errors stats"
+  ],
+  "claim": {
+    "agent": "hermes",
+    "claimed_at": "2026-09-05T14:40:43+02:00"
+  },
+  "work_status": "completed",
+  "review_status": "approved",
+  "review_history": [
+    {
+      "created_at": "2026-09-05T14:52:16+02:00",
+      "agent": "hermes",
+      "status": "approved",
+      "evidence": "Reviewed profile isolation, schema compatibility, secret redaction, CLI packaging, concurrent writes, and runtime readback. Initial installed-entrypoint defect was fixed; no remaining blocking findings.",
+      "transaction_id": "dddf3839f37341c194b802106692e686"
+    }
+  ],
+  "evidence": [
+    {
+      "schema": "go-workflow.finish-evidence.v1",
+      "created_at": "2026-09-05T14:52:16+02:00",
+      "task_id": "HERMES-ERROR-KNOWLEDGE-CORE-20260905",
+      "agent": "hermes",
+      "summary": "changed_files=hermes_cli/error_knowledge.py,hermes_cli/error_cmd.py,hermes_cli/main.py,tests/hermes_cli/test_error_knowledge.py; verification_command=venv/bin/python -m pytest tests/hermes_cli/test_error_knowledge.py tests/hermes_cli/test_commands.py tests/hermes_cli/test_subcommands_batch.py tests/hermes_cli/test_apply_profile_override.py -q -o 'addopts='; verification_result=64 tests passed across focused and adjacent CLI/profile suites; critic=approved after installed-entrypoint packaging repair and parallel-write hardening, no blocking findings; runtime=Hermes Agent gpt-5.6-sol",
+      "changed_files": [
+        "hermes_cli/error_knowledge.py",
+        "hermes_cli/error_cmd.py",
+        "hermes_cli/main.py",
+        "tests/hermes_cli/test_error_knowledge.py"
+      ],
+      "no_diff": false,
+      "verification": {
+        "command": "venv/bin/python -m pytest tests/hermes_cli/test_error_knowledge.py tests/hermes_cli/test_commands.py tests/hermes_cli/test_subcommands_batch.py tests/hermes_cli/test_apply_profile_override.py -q -o 'addopts='",
+        "result": "64 tests passed across focused and adjacent CLI/profile suites"
+      },
+      "runtime": {
+        "agent": "hermes",
+        "runtime": "Hermes Agent gpt-5.6-sol",
+        "model": null,
+        "billing_mode": "unknown"
+      },
+      "usage": {
+        "schema": "go-workflow.usage-attribution.v1",
+        "runtime_kind": "Hermes Agent gpt-5.6-sol",
+        "billing_mode": "unknown",
+        "owner": "hermes",
+        "model": null,
+        "token_estimate": null,
+        "api_equivalent_cost_usd": null,
+        "provider_invoice_cost_usd": null,
+        "cost_label": "api_equivalent_not_invoice_cost"
+      },
+      "review": {
+        "outcome": "approved after installed-entrypoint packaging repair and parallel-write hardening, no blocking findings",
+        "skip_reason": null
+      }
+    }
+  ]
+}

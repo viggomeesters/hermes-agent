@@ -43,6 +43,15 @@
       "tasks": [
         "HERMES-BROWSER-VISION-PATCH-LIMIT-20260905"
       ]
+    },
+    {
+      "id": "error-learning",
+      "title": "Central error learning",
+      "description": "Make reusable incident knowledge a profile-aware Hermes runtime capability with thin skill-driven operation.",
+      "features": [],
+      "tasks": [
+        "HERMES-ERROR-KNOWLEDGE-CORE-20260905"
+      ]
     }
   ]
 }
