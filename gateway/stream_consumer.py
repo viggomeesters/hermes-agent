@@ -902,6 +902,19 @@ class GatewayStreamConsumer:
                         split_at = self._accumulated.rfind("\n", 0, _cp_budget)
                         if split_at < _cp_budget // 2:
                             split_at = _cp_budget
+                        # Never split a trailing MEDIA control line.  Hiding the
+                        # head half is insufficient: the remainder would lose
+                        # its ``MEDIA:`` prefix and leak as a bare local-path
+                        # fragment on the next preview.  Seal only the prose
+                        # before the directive, or defer splitting entirely
+                        # when the directive is the whole active chunk.
+                        media_start = self._trailing_stream_media_start(
+                            self._accumulated
+                        )
+                        if media_start is not None and media_start < split_at:
+                            if media_start == 0:
+                                break
+                            split_at = media_start
                         chunk = self._accumulated[:split_at]
                         # finalize=True so the adapter applies platform-specific
                         # rich-text markup (e.g. Telegram MarkdownV2). This
@@ -1114,7 +1127,29 @@ class GatewayStreamConsumer:
     _MEDIA_RE = MEDIA_TAG_CLEANUP_RE
 
     @staticmethod
-    def _clean_for_display(text: str) -> str:
+    def _trailing_stream_media_start(text: str) -> Optional[int]:
+        """Return the start of a trailing standalone absolute MEDIA line."""
+        if "MEDIA:" not in text:
+            return None
+        tail_start = text.rfind("\n") + 1
+        tail = text[tail_start:].lstrip(" \t")
+        for emphasis in ("***", "___", "**", "__", "*", "_"):
+            if tail.startswith(emphasis):
+                tail = tail[len(emphasis):]
+                break
+        if not tail.startswith("MEDIA:"):
+            return None
+        media_path = tail[len("MEDIA:"):].lstrip(" \t")
+        is_absolute = media_path.startswith(("/", "~/")) or (
+            len(media_path) >= 3
+            and media_path[0].isalpha()
+            and media_path[1] == ":"
+            and media_path[2] in ("/", "\\")
+        )
+        return tail_start if is_absolute else None
+
+    @staticmethod
+    def _clean_for_display(text: str, *, preview: bool = False) -> str:
         """Strip MEDIA: directives and internal markers from text before display.
 
         The streaming path delivers raw text chunks that may include
@@ -1123,8 +1158,27 @@ class GatewayStreamConsumer:
         delivered separately via ``_deliver_media_from_response()`` after the
         stream finishes — we just need to hide the raw directives from the
         user.
+
+        While a preview is still streaming, hold back a trailing standalone
+        absolute-path directive whose extension may be incomplete.  Final
+        output keeps the strict shared parser so invalid examples remain
+        visible rather than being silently swallowed.
         """
-        return _BasePlatformAdapter.strip_media_directives_for_display(text)
+        cleaned = _BasePlatformAdapter.strip_media_directives_for_display(text)
+        if not preview or "MEDIA:" not in text:
+            return cleaned
+
+        # A control directive can arrive as ``...-v5.`` followed by ``html`` in
+        # the next delta.  Publishing the incomplete prefix leaks the local path
+        # even though the completed response is a valid attachment directive.
+        # Restrict buffering to the final standalone line and absolute paths;
+        # inline/backticked examples retain the established strict behavior.
+        tail_start = GatewayStreamConsumer._trailing_stream_media_start(text)
+        if tail_start is None:
+            return cleaned
+        return _BasePlatformAdapter.strip_media_directives_for_display(
+            text[:tail_start]
+        ).rstrip()
 
     async def _send_new_chunk(
         self,
@@ -1137,7 +1191,7 @@ class GatewayStreamConsumer:
 
         Returns the message_id so callers can thread subsequent chunks.
         """
-        text = self._clean_for_display(text)
+        text = self._clean_for_display(text, preview=not final)
         if not text.strip():
             return reply_to_id
         try:
@@ -1924,7 +1978,14 @@ class GatewayStreamConsumer:
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
-        text = self._clean_for_display(text)
+        # ``finalize=True`` is also used to seal overflow head chunks for rich
+        # formatting.  Those chunks are not the completed turn and can still
+        # end halfway through a MEDIA path, so only the actual turn-final send
+        # may use strict final display behavior.
+        text = self._clean_for_display(
+            text,
+            preview=not (finalize and is_turn_final),
+        )
         # Ensure code fences are balanced before send/edit.  Model output
         # truncated mid-code-block (e.g. finish_reason="length") leaves an
         # orphaned ``` which, on Discord/Slack/Matrix, causes the entire

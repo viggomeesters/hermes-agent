@@ -267,6 +267,149 @@ class TestStreamRunMediaStripping:
 
         assert consumer.already_sent
 
+    @pytest.mark.asyncio
+    async def test_stream_split_media_html_tag_never_leaks_into_preview(self):
+        """A MEDIA path is a control directive even while its extension is
+        incomplete in an intermediate streaming delta.
+
+        Production regression: Telegram received the prefix ending in ``.``
+        before the final ``html`` delta, so the literal local path remained in
+        the visible bot bubble even though the completed response was a valid
+        document directive.
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+        consumer.on_delta(
+            "De nieuwe HTML is klaar:\n\n"
+            "MEDIA:/home/viggo/herendam-137-opknapplan-2026-09-05-v5."
+        )
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("html")
+        consumer.finish()
+        await task
+
+        visible_payloads = [
+            call.kwargs.get("content", "") for call in adapter.send.call_args_list
+        ] + [
+            call.kwargs.get("content", "")
+            for call in adapter.edit_message.call_args_list
+        ]
+        assert visible_payloads
+        assert all("MEDIA:" not in payload for payload in visible_payloads)
+        assert any("De nieuwe HTML is klaar" in payload for payload in visible_payloads)
+
+    @pytest.mark.asyncio
+    async def test_final_invalid_media_example_remains_visible(self):
+        """Preview buffering must not silently delete an invalid final example."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+        consumer.on_delta("Example:\nMEDIA:/not/a/real/file.unknown-extension")
+        consumer.finish()
+        await consumer.run()
+
+        visible_payloads = [
+            call.kwargs.get("content", "") for call in adapter.send.call_args_list
+        ] + [
+            call.kwargs.get("content", "")
+            for call in adapter.edit_message.call_args_list
+        ]
+        assert any(
+            "MEDIA:/not/a/real/file.unknown-extension" in payload
+            for payload in visible_payloads
+        )
+
+    @pytest.mark.asyncio
+    async def test_sealed_overflow_head_holds_incomplete_media_directive(self):
+        """Rich-format finalization of a non-final overflow chunk is a preview."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+        delivered = await consumer._send_or_edit(
+            "Preamble\nMEDIA:/home/viggo/report.",
+            finalize=True,
+            is_turn_final=False,
+        )
+
+        assert delivered is True
+        adapter.send.assert_awaited_once()
+        assert "MEDIA:" not in adapter.send.await_args.kwargs["content"]
+        assert "Preamble" in adapter.send.await_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_overflow_never_splits_or_leaks_media_path_fragments(self):
+        """A long trailing MEDIA line stays atomic across preview overflow."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 80
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+        consumer.on_delta(
+            "Visible preamble before the attachment.\n"
+            "MEDIA:/home/viggo/SECRET-LOCAL-PATH-" + ("x" * 120) + "."
+        )
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("html")
+        consumer.finish()
+        await task
+
+        visible_payloads = [
+            call.kwargs.get("content", "") for call in adapter.send.call_args_list
+        ] + [
+            call.kwargs.get("content", "")
+            for call in adapter.edit_message.call_args_list
+        ]
+        assert visible_payloads
+        assert any("Visible preamble" in payload for payload in visible_payloads)
+        assert all("MEDIA:" not in payload for payload in visible_payloads)
+        assert all("SECRET-LOCAL-PATH" not in payload for payload in visible_payloads)
+        assert all(("x" * 20) not in payload for payload in visible_payloads)
+
 
 class TestBeforeFinalizeHook:
     """Verify the optional pre-finalize hook fires at the right time."""
