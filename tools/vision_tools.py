@@ -589,6 +589,12 @@ _EMBED_TARGET_BYTES = 4 * 1024 * 1024
 # images before they are embedded.
 _EMBED_MAX_DIMENSION = 7900
 
+# OpenAI vision tokenization uses 32px patches and rejects images above 30,000
+# patches. Keep headroom because ceil-to-patch rounding means a dimension-only
+# cap cannot protect large square images.
+_IMAGE_PATCH_SIZE = 32
+_EMBED_MAX_PATCHES = 28000
+
 # Target size when auto-resizing on API failure (5 MB).  After a provider
 # rejects an image, we downscale to this target and retry once.
 _RESIZE_TARGET_BYTES = 5 * 1024 * 1024
@@ -622,9 +628,27 @@ def _image_exceeds_dimension(image_path: Path, max_dimension: int) -> bool:
         return False
 
 
+def _image_exceeds_patch_limit(
+    image_path: Path,
+    max_patches: int,
+    patch_size: int = _IMAGE_PATCH_SIZE,
+) -> bool:
+    """True when provider image tiling would exceed ``max_patches``."""
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            patches_w = (_img.width + patch_size - 1) // patch_size
+            patches_h = (_img.height + patch_size - 1) // patch_size
+            return patches_w * patches_h > max_patches
+    except Exception:
+        return False
+
+
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
-                              max_dimension: Optional[int] = None) -> str:
+                              max_dimension: Optional[int] = None,
+                              max_patches: Optional[int] = None,
+                              patch_size: int = _IMAGE_PATCH_SIZE) -> str:
     """Convert an image to a base64 data URL, auto-resizing if too large.
 
     Tries Pillow first to progressively downscale oversized images.  If Pillow
@@ -636,6 +660,8 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             count are forcibly downscaled even if they're under the byte
             budget.  Anthropic enforces an 8000 px per-side cap independently
             of the 5 MB byte cap.
+        max_patches: If set, images are downscaled until their total number of
+            ``patch_size`` square tiles fits below this provider limit.
 
     Returns the base64 data URL string.
     """
@@ -645,18 +671,23 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
     needs_resize_for_bytes = estimated_b64 > max_base64_bytes
 
-    # Check pixel dimensions even if bytes are fine.
+    # Check pixel dimensions and provider patch count even if bytes are fine.
     needs_resize_for_dims = False
-    if max_dimension is not None:
+    needs_resize_for_patches = False
+    if max_dimension is not None or max_patches is not None:
         try:
             from PIL import Image as _PILQuick
             with _PILQuick.open(image_path) as _quick_img:
-                if max(_quick_img.size) > max_dimension:
+                if max_dimension is not None and max(_quick_img.size) > max_dimension:
                     needs_resize_for_dims = True
+                if max_patches is not None:
+                    patches_w = (_quick_img.width + patch_size - 1) // patch_size
+                    patches_h = (_quick_img.height + patch_size - 1) // patch_size
+                    needs_resize_for_patches = patches_w * patches_h > max_patches
         except Exception:
             pass  # can't check; Pillow path below will handle or skip
 
-    if not needs_resize_for_bytes and not needs_resize_for_dims:
+    if not needs_resize_for_bytes and not needs_resize_for_dims and not needs_resize_for_patches:
         # Small enough — just encode directly.
         data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         if len(data_url) <= max_base64_bytes:
@@ -688,9 +719,9 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
             return data_url  # caller will raise the size error
 
-    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s), auto-resizing...",
+    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB, max_dimension=%s, max_patches=%s), auto-resizing...",
                 file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
-                max_base64_bytes / (1024 * 1024), max_dimension)
+                max_base64_bytes / (1024 * 1024), max_dimension, max_patches)
 
     mime = mime_type or _determine_mime_type(image_path)
     # Choose output format: JPEG for photos (smaller), PNG for transparency
@@ -708,6 +739,21 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
         img = img.convert("RGB")
 
+    if max_patches is not None:
+        patches_w = (img.width + patch_size - 1) // patch_size
+        patches_h = (img.height + patch_size - 1) // patch_size
+        if patches_w * patches_h > max_patches:
+            import math
+            target_pixels = max_patches * patch_size * patch_size * 0.95
+            scale = min(1.0, math.sqrt(target_pixels / (img.width * img.height)))
+            new_w = max(int(img.width * scale), 1)
+            new_h = max(int(img.height * scale), 1)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            logger.info(
+                "Resized to %dx%d for image patch limit %d",
+                new_w, new_h, max_patches,
+            )
+
     # Strategy: halve dimensions until both base64 fits AND pixel dimensions
     # are within limits, up to 4 rounds.
     # For JPEG, also try reducing quality at each size step.
@@ -717,10 +763,15 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     candidate = None  # will be set on first loop iteration
 
     def _dims_ok(w: int, h: int) -> bool:
-        """True if both pixel dimensions are within the limit."""
-        if max_dimension is None:
-            return True
-        return max(w, h) <= max_dimension
+        """True if dimensions and total provider patches are within limits."""
+        if max_dimension is not None and max(w, h) > max_dimension:
+            return False
+        if max_patches is not None:
+            patches_w = (w + patch_size - 1) // patch_size
+            patches_h = (h + patch_size - 1) // patch_size
+            if patches_w * patches_h > max_patches:
+                return False
+        return True
 
     for attempt in range(5):
         if attempt > 0:
@@ -1032,23 +1083,24 @@ async def _vision_analyze_native(
         )
 
         # Proactive embed cap: this image gets baked into conversation
-        # history and re-sent on every subsequent turn.  Anthropic rejects
-        # any single base64 image over 5 MB OR over 8000px per side with a
-        # 400, and because history is immutable, an oversized embed
-        # permanently wedges the session — retries can't clear bytes (or
-        # pixels) that are already in the request.  Resize DOWN to the embed
-        # target (4 MB / 7900px, headroom under both ceilings) whenever the
-        # payload exceeds either limit, not just at the 20 MB hard ceiling.
+        # history and re-sent on every subsequent turn. Providers reject
+        # oversized base64 payloads, long sides, or excessive 32px patch totals;
+        # because history is immutable, any one of those permanently wedges the
+        # session. Resize before embedding, with headroom under every ceiling.
         _over_bytes = len(image_data_url) > _EMBED_TARGET_BYTES
         _over_dims = await _run_encode_on_cpu_executor(
             _image_exceeds_dimension, temp_image_path, _EMBED_MAX_DIMENSION,
         )
-        if _over_bytes or _over_dims:
+        _over_patches = await _run_encode_on_cpu_executor(
+            _image_exceeds_patch_limit, temp_image_path, _EMBED_MAX_PATCHES,
+        )
+        if _over_bytes or _over_dims or _over_patches:
             image_data_url = await _run_encode_on_cpu_executor(
                 _resize_image_for_vision,
                 temp_image_path, mime_type=detected_mime_type,
                 max_base64_bytes=_EMBED_TARGET_BYTES,
                 max_dimension=_EMBED_MAX_DIMENSION,
+                max_patches=_EMBED_MAX_PATCHES,
             )
             # If even resizing can't get under the absolute hard ceiling,
             # there's nothing more we can do — reject rather than embed a

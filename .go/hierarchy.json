@@ -32,6 +32,15 @@
         "HERMES-CODEX-TTFB-20260904",
         "HERMES-OPCARD-ACTIVITY-20260904"
       ]
+    },
+    {
+      "id": "vision-hardening",
+      "title": "Vision hardening",
+      "description": "Keep screenshot and image tool results within provider-safe transport limits without losing original artifacts.",
+      "features": [],
+      "tasks": [
+        "HERMES-BROWSER-VISION-PATCH-LIMIT-20260905"
+      ]
     }
   ]
 }

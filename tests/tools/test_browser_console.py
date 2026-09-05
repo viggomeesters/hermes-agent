@@ -315,6 +315,51 @@ class TestBrowserVisionConfig:
         mock_get_vision_model.assert_not_called()
         mock_llm.assert_not_called()
 
+    @pytest.mark.parametrize("dimensions", [(1273, 31554), (6000, 6000)])
+    def test_browser_vision_native_fast_path_bounds_provider_image_patches(
+        self, tmp_path, dimensions
+    ):
+        """Full-page and large-square screenshots must not poison Codex history."""
+        import base64
+        import io
+
+        from PIL import Image
+        from agent.auxiliary_client import clear_runtime_main, set_runtime_main
+        from tools.browser_tool import browser_vision
+
+        shots_dir = tmp_path / "browser_screenshots"
+        shots_dir.mkdir()
+        screenshot = shots_dir / "oversized-page.png"
+        Image.new("1", dimensions, 1).save(screenshot, format="PNG")
+
+        set_runtime_main("openai-codex", "gpt-5.6-sol")
+        try:
+            with (
+                patch("hermes_constants.get_hermes_dir", return_value=shots_dir),
+                patch("tools.browser_tool._cleanup_old_screenshots"),
+                patch(
+                    "tools.browser_tool._run_browser_command",
+                    return_value={"success": True, "data": {"path": str(screenshot)}},
+                ),
+                patch("tools.browser_tool._get_vision_model") as mock_get_vision_model,
+                patch("tools.browser_tool.call_llm") as mock_llm,
+            ):
+                result = browser_vision("inspect the full page", task_id="test")
+        finally:
+            clear_runtime_main()
+
+        image_part = next(p for p in result["content"] if p.get("type") == "image_url")
+        encoded = image_part["image_url"]["url"].split(",", 1)[1]
+        with Image.open(io.BytesIO(base64.b64decode(encoded))) as attached:
+            patch_count = ((attached.width + 31) // 32) * ((attached.height + 31) // 32)
+
+        assert patch_count < 30000
+        assert result["meta"]["screenshot_path"] == str(screenshot)
+        with Image.open(screenshot) as original:
+            assert original.size == dimensions
+        mock_get_vision_model.assert_not_called()
+        mock_llm.assert_not_called()
+
     def test_browser_vision_text_mode_blocks_native_fast_path(self, tmp_path):
         """Explicit text routing → aux LLM used even with supports_vision."""
         from agent.auxiliary_client import clear_runtime_main, set_runtime_main

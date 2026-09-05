@@ -1,0 +1,49 @@
+{
+  "schema": "go-workflow.delivery.v1",
+  "delivery_id": "vision-hardening-v1",
+  "project": {
+    "id": "hermes-agent",
+    "name": "Hermes Agent"
+  },
+  "assignment": {
+    "kind": "epic",
+    "id": "vision-hardening",
+    "title": "Vision hardening"
+  },
+  "release": {
+    "version": 1,
+    "status": "released",
+    "created_at": "2026-09-05T08:52:49+02:00",
+    "supersedes": null
+  },
+  "disclosure": {
+    "class": "restricted",
+    "scan_status": "passed"
+  },
+  "sections": {
+    "summary": "Keep screenshot and image tool results within provider-safe transport limits without losing original artifacts.",
+    "delivered_scope": [
+      "Bound native browser vision screenshots before provider patch limits"
+    ],
+    "excluded_scope": [
+      "Geen aanvullende uitgesloten scope vastgelegd."
+    ],
+    "evidence": [
+      {
+        "label": "Bound native browser vision screenshots before provider patch limits",
+        "summary": "verification_command=HERMES_HOME=<temp> venv/bin/python -m pytest tests/tools/test_browser_console.py tests/tools/test_vision_tools.py -q -o addopts=; verification_result=56 passed in 5.68s; critic=Verdict A after inverted square-image probe: tall 1273x31554 attached at 1827 patches, square 6000x6000 at 26896 patches, normal 1280x720 byte-identical, originals preserved; runtime=hermes; model=gpt-5.6-sol; billing_mode=subscription; self_reflect=no durable agent/process improvement needed"
+      }
+    ],
+    "limitations": [
+      "Alleen bewijs dat in .go is vastgelegd wordt in deze levering vertegenwoordigd."
+    ],
+    "next_steps": [
+      "Review deze levering met de opdrachtgever."
+    ]
+  },
+  "provenance": {
+    "source": ".go",
+    "source_sha256": "0aa825095ae71e8b6beb87891d2c7ab880210e1aa021bed0b82979a9efb35f64",
+    "html_sha256": "2a78c9bfa189409c23168a6e0830381da7733dd6f3c06037cc246d0e17c6e155"
+  }
+}

@@ -4296,14 +4296,37 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         )
 
         if _should_use_native_vision_fast_path():
+            # Native tool-result images become immutable conversation history and
+            # are re-sent on every later turn. Reuse the same proactive embed
+            # bounds as vision_analyze so a tall/full-page screenshot cannot
+            # permanently wedge the session on a provider-side byte/dimension
+            # rejection before the model gets a chance to recover.
+            from tools.vision_tools import (
+                _EMBED_MAX_DIMENSION,
+                _EMBED_MAX_PATCHES,
+                _EMBED_TARGET_BYTES,
+                _resize_image_for_vision,
+            )
+
+            data_url = _resize_image_for_vision(
+                screenshot_path,
+                mime_type="image/png",
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+                max_patches=_EMBED_MAX_PATCHES,
+            )
+            _attached_b64 = data_url.partition(",")[2]
+            _attached_size_bytes = len(base64.b64decode(_attached_b64))
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),
                 question=question,
                 image_data_url=data_url,
-                image_size_bytes=len(_screenshot_bytes),
+                image_size_bytes=_attached_size_bytes,
             )
             meta = native_result.setdefault("meta", {})
             meta["screenshot_path"] = str(screenshot_path)
+            if _attached_size_bytes != len(_screenshot_bytes):
+                meta["original_size_bytes"] = len(_screenshot_bytes)
             if _lp_fallback_warning:
                 meta["fallback_warning"] = _lp_fallback_warning
             if annotate and result.get("data", {}).get("annotations"):
