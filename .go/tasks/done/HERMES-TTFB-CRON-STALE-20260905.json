@@ -1,0 +1,81 @@
+{
+  "schema": "go-workflow.repo-local.task.v1",
+  "kind": "task",
+  "execution_mode": "agent",
+  "shareable_delivery": "none",
+  "id": "HERMES-TTFB-CRON-STALE-20260905",
+  "project": "hermes-agent",
+  "status": "done",
+  "summary": "Retire stale TTFB post-reload cron verifier safely",
+  "description": "Make the removed one-shot TTFB verifier idempotent after its workflow task is already done, accept descendant checkouts instead of exact HEAD equality, recover from failed state, and prove no active duplicate cron remains.",
+  "scope": {
+    "read": [
+      ".go/tasks/done/HERMES-CODEX-TTFB-20260904.json",
+      "/home/viggo/.hermes/state/ttfb-fix-20260904-complete.json",
+      "/home/viggo/.hermes/cron/jobs.json"
+    ],
+    "modify": [
+      "/home/viggo/.hermes/scripts/hermes_ttfb_fix_post_reload.py",
+      "/home/viggo/.hermes/state/ttfb-fix-20260904-complete.json",
+      ".go"
+    ]
+  },
+  "acceptance": [
+    "Already-completed TTFB task exits zero and records verified/retired state without rerunning provider probes or workflow finish.",
+    "Descendant commits containing the expected fix are accepted; unrelated checkouts still fail closed.",
+    "Failed result state is retryable rather than permanently suppressing verification.",
+    "No active TTFB verifier cron remains."
+  ],
+  "verification": [
+    "/home/viggo/.hermes/hermes-agent/venv/bin/python -m py_compile /home/viggo/.hermes/scripts/hermes_ttfb_fix_post_reload.py",
+    "focused temporary regression harness for done failed-result descendant and unrelated-checkout paths",
+    "direct script smoke exits 0 and writes verified state"
+  ],
+  "claim": {
+    "agent": "hermes-cron-fix",
+    "claimed_at": "2026-09-05T08:59:07+02:00"
+  },
+  "work_status": "completed",
+  "review_status": "review",
+  "review_history": [],
+  "evidence": [
+    {
+      "schema": "go-workflow.finish-evidence.v1",
+      "created_at": "2026-09-05T09:09:35+02:00",
+      "task_id": "HERMES-TTFB-CRON-STALE-20260905",
+      "agent": "hermes-cron-fix",
+      "summary": "changed_files=/home/viggo/.hermes/scripts/hermes_ttfb_fix_post_reload.py,/home/viggo/.hermes/state/ttfb-fix-20260904-complete.json,.go; verification_command=py_compile plus isolated regression harness plus three direct idempotent script smokes plus cron jobs.json readback; verification_result=all green, status verified/already-complete/retired, zero active TTFB cron jobs, gateway PID 6737 unchanged; critic_outcome=A APPROVE deleg_eeed9ce3 no blockers; runtime=hermes; model=gpt-5.6-sol; billing_mode=subscription",
+      "changed_files": [
+        "/home/viggo/.hermes/scripts/hermes_ttfb_fix_post_reload.py",
+        "/home/viggo/.hermes/state/ttfb-fix-20260904-complete.json",
+        ".go"
+      ],
+      "no_diff": false,
+      "verification": {
+        "command": "py_compile plus isolated regression harness plus three direct idempotent script smokes plus cron jobs.json readback",
+        "result": "all green, status verified/already-complete/retired, zero active TTFB cron jobs, gateway PID 6737 unchanged"
+      },
+      "runtime": {
+        "agent": "hermes-cron-fix",
+        "runtime": "hermes",
+        "model": "gpt-5.6-sol",
+        "billing_mode": "subscription"
+      },
+      "usage": {
+        "schema": "go-workflow.usage-attribution.v1",
+        "runtime_kind": "hermes",
+        "billing_mode": "subscription",
+        "owner": "hermes-cron-fix",
+        "model": "gpt-5.6-sol",
+        "token_estimate": null,
+        "api_equivalent_cost_usd": null,
+        "provider_invoice_cost_usd": null,
+        "cost_label": "api_equivalent_not_invoice_cost"
+      },
+      "review": {
+        "outcome": "A APPROVE deleg_eeed9ce3 no blockers",
+        "skip_reason": null
+      }
+    }
+  ]
+}
